@@ -1,6 +1,8 @@
 import torch 
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pad_packed_sequence
 import numpy as np
 from utils import cc 
 
@@ -45,61 +47,65 @@ class VGG2L(torch.nn.Module):
         xs = xs.contiguous().view(xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
         return xs, ilens
 
-class pBLSTMLayer(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, subsample, dropout_rate):
-        super(pBLSTMLayer, self).__init__()
-        self.subsample = subsample
-        if subsample > 0:
-            self.BLSTM = torch.nn.LSTM(input_dim*2, hidden_dim, 1, bidirectional=True,
-                    dropout=dropout_rate, batch_first=True)
-        else:
-            self.BLSTM = torch.nn.LSTM(input_dim, hidden_dim, 1, bidirectional=True,
-                    dropout=dropout_rate, batch_first=True)
-
-    def forward(self, x):
-        # x = [batch_size, frames, feature_dim]
-        batch_size = x.size(0)
-        timesteps = x.size(1)
-        input_dim = x.size(2)
-        if self.subsample > 0 and timesteps % 2 == 0:
-            x = x.contiguous().view(batch_size, timesteps//2, input_dim*2)
-        elif self.subsample > 0:
-            # pad one frame
-            x = _pad_one_frame(x)
-            x = x.contiguous().view(batch_size, timesteps//2+1, input_dim*2)
-        output, hidden = self.BLSTM(x)
-        return output, hidden
+#class pBLSTMLayer(torch.nn.Module):
+#    def __init__(self, input_dim, hidden_dim, subsample, dropout_rate):
+#        super(pBLSTMLayer, self).__init__()
+#        self.subsample = subsample
+#        if subsample > 0:
+#            self.BLSTM = torch.nn.LSTM(input_dim*2, hidden_dim, 1, bidirectional=True,
+#                    dropout=dropout_rate, batch_first=True)
+#        else:
+#            self.BLSTM = torch.nn.LSTM(input_dim, hidden_dim, 1, bidirectional=True,
+#                    dropout=dropout_rate, batch_first=True)
+#
+#    def forward(self, x):
+#        # x = [batch_size, frames, feature_dim]
+#        batch_size = x.size(0)
+#        timesteps = x.size(1)
+#        input_dim = x.size(2)
+#        if self.subsample > 0 and timesteps % 2 == 0:
+#            x = x.contiguous().view(batch_size, timesteps//2, input_dim*2)
+#        elif self.subsample > 0:
+#            # pad one frame
+#            x = _pad_one_frame(x)
+#            x = x.contiguous().view(batch_size, timesteps//2+1, input_dim*2)
+#        output, hidden = self.BLSTM(x)
+#        return output, hidden
 
 class pBLSTM(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, n_layers, subsamples, dropout_rate):
+    def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate):
         super(pBLSTM, self).__init__()
-        layers = []
+        layers, dropout_layers = [], []
         for i in range(n_layers):
-            if i == 0:
-                idim = input_dim
-            else:
-                # bidirectional
-                idim = hidden_dim * 2
-            layers.append(pBLSTMLayer(input_dim=idim, hidden_dim=hidden_dim, subsample=subsamples[i], 
-                dropout_rate=dropout_rate))
+            idim = input_dim if i == 0 else hidden_dim * 2
+            layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1, bidirectional=True, batch_first=True))
+            dropout_layers.append(torch.nn.Dropout(p=dropout_rate, inplace=True))
         self.layers = torch.nn.ModuleList(layers)
-        self.total_subsample = sum(subsamples)
+        self.dropout_layers = torch.nn.ModuleList(dropout_layers)
+        self.subsample = subsample
 
-    def forward(self, x, ilens):
-        out = x 
-        for i, layer in enumerate(self.layers):
-            out, _ = layer(out)
-        for i in range(self.total_subsample):
-            ilens = np.array(np.ceil(np.array(ilens, dtype=np.float32) / 2), dtype=np.int64) 
-        return out, ilens.tolist()
+    def forward(self, xpad, ilens):
+        for i, (layer, dropout_layer) in enumerate(zip(self.layers, self.dropout_layers)):
+            # pack sequence 
+            xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
+            xs, (_, _) = layer(xpack)
+            xpad, ilens = pad_packed_sequence(xs, batch_first=True)
+            xpad = dropout_layer(xpad)
+            ilens = ilens.numpy()
+            # subsampling
+            sub = self.subsample[i]
+            if sub > 1:
+                xpad = xpad[:, ::sub]
+                ilens = [(length + 1) // sub for length in ilens]
+        return xpad, ilens
 
 class Encoder(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, n_layers, subsamples, dropout_rate, in_channel=1):
+    def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate, in_channel=1):
         super(Encoder, self).__init__()
         self.enc1 = VGG2L(in_channel)
         out_channel = _get_vgg2l_odim(input_dim) 
         self.enc2 = pBLSTM(input_dim=out_channel, hidden_dim=hidden_dim, n_layers=n_layers, 
-                subsamples=subsamples, dropout_rate=dropout_rate)
+                subsample=subsample, dropout_rate=dropout_rate)
 
     def forward(self, x, ilens):
         out, ilens = self.enc1(x, ilens)
@@ -166,26 +172,27 @@ class AttLoc(torch.nn.Module):
         return c, w 
 
 class Decoder(torch.nn.Module):
-    def __init__(self, output_dim, hidden_dim, encoder_dim, att_proj_dim, bos, eos):
+    def __init__(self, output_dim, hidden_dim, encoder_dim, att_dim, bos, eos):
         self.bos, self.eos = bos, eos
         self.emb = torch.nn.Embedding(output_dim, hidden_dim)
-        #self.LSTM = torch.nn.LSTMCell(att_proj_dim, )
+        self.LSTM = torch.nn.LSTMCell(encoder_dim + hidden_dim, hidden_dim)
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
 
 if __name__ == '__main__':
-    net = cc(Encoder(83, 320, 4, [0, 1, 1, 0], dropout_rate=0.3))
-    data = cc(Variable(torch.randn(32, 321, 83)))
+    data = cc(torch.randn(32, 321, 13))
     ilens = np.ones((32,), dtype=np.int64) * 121
+    net = cc(Encoder(13, 320, 4, [1, 2, 2, 1], dropout_rate=0.3))
     output, ilens = net(data, ilens)
     print(output.size())
-    att = cc(AttLoc(640, 320, 300, 100, 10))
-    att.reset()
-    dec = cc(Variable(torch.randn(32, 320)))
-    context, weights = att(output, dec, None)
-    print(context.size(), weights.size(), weights[0])
-    dec = cc(Variable(torch.randn(32, 320)))
-    context, weights = att(output, dec, weights)
-    print(context.size(), weights.size(), weights[0])
-    dec = cc(Variable(torch.randn(32, 320)))
-    context, weights = att(output, dec, weights)
-    print(context.size(), weights.size(), weights[0])
+    #att = cc(AttLoc(640, 320, 300, 100, 10))
+    #att.reset()
+    #dec = cc(Variable(torch.randn(32, 320)))
+    #context, weights = att(output, dec, None)
+    #print(context.size(), weights.size(), weights[0])
+    #dec = cc(Variable(torch.randn(32, 320)))
+    #context, weights = att(output, dec, weights)
+    #print(context.size(), weights.size(), weights[0])
+    #dec = cc(Variable(torch.randn(32, 320)))
+    #context, weights = att(output, dec, weights)
+    #print(context.size(), weights.size(), weights[0])
 
