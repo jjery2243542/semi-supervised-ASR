@@ -2,8 +2,11 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.nn.utils.rnn import pad_packed_sequence
+from torch.nn.utils.rnn import pad_sequence
 import numpy as np
-from utils import cc 
+from utils import cc
+from utils import pad_list
+import os
 
 def _get_vgg2l_odim(idim, in_channel=1, out_channel=128):
     idim = idim / in_channel
@@ -96,6 +99,7 @@ class pBLSTM(torch.nn.Module):
             if sub > 1:
                 xpad = xpad[:, ::sub]
                 ilens = [(length + 1) // sub for length in ilens]
+        ilens = ilens.tolist()
         return xpad, ilens
 
 class Encoder(torch.nn.Module):
@@ -103,8 +107,8 @@ class Encoder(torch.nn.Module):
         super(Encoder, self).__init__()
         self.enc1 = VGG2L(in_channel)
         out_channel = _get_vgg2l_odim(input_dim) 
-        self.enc2 = pBLSTM(input_dim=out_channel, hidden_dim=hidden_dim, n_layers=n_layers, 
-                subsample=subsample, dropout_rate=dropout_rate)
+        self.enc2 = pBLSTM(input_dim=out_channel, hidden_dim=hidden_dim, 
+                n_layers=n_layers, subsample=subsample, dropout_rate=dropout_rate)
 
     def forward(self, x, ilens):
         out, ilens = self.enc1(x, ilens)
@@ -113,8 +117,8 @@ class Encoder(torch.nn.Module):
 
 class MultiHeadAttLoc(torch.nn.Module):
     def __init__(self, encoder_dim, decoder_dim, att_dim, conv_channels, conv_kernel_size, heads, att_odim):
-        super(AttLoc, self).__init__()
-	self.heads = heads
+        super(MultiHeadAttLoc, self).__init__()
+        self.heads = heads
         self.mlp_enc = torch.nn.ModuleList([torch.nn.Linear(encoder_dim, att_dim) for _ in range(self.heads)])
         self.mlp_dec = torch.nn.ModuleList([torch.nn.Linear(decoder_dim, att_dim, bias=False) \
 		for _ in range(self.heads)])
@@ -127,7 +131,7 @@ class MultiHeadAttLoc(torch.nn.Module):
         else:
             self.padding = (conv_kernel_size // 2, conv_kernel_size // 2)
         self.gvec = torch.nn.ModuleList([torch.nn.Linear(att_dim, 1, bias=False) for _ in range(self.heads)])
-        self.mlp_o = torch.nn.Linear(self.heads * att_dim, att_odim)
+        self.mlp_o = torch.nn.Linear(self.heads * encoder_dim, att_odim)
 
         self.encoder_dim = encoder_dim
         self.decoder_dim = decoder_dim
@@ -142,7 +146,7 @@ class MultiHeadAttLoc(torch.nn.Module):
         self.enc_h = None
         self.pre_compute_enc_h = None
 
-    def forward(self, enc_pad, dec_z, att_prev, scaling=1.0):
+    def forward(self, enc_pad, enc_len, dec_z, att_prev, scaling=1.0):
         batch_size =enc_pad.size(0)
         if self.pre_compute_enc_h is None:
             self.enc_h = enc_pad
@@ -154,15 +158,16 @@ class MultiHeadAttLoc(torch.nn.Module):
         else:
             dec_z = dec_z.view(batch_size, self.decoder_dim)
 
-        # initialize attention weights
+        # initialize attention weights to uniform
         if att_prev is None:
-            att_prev = [enc_pad.data.new(batch_size, self.enc_length).zero_() for _ in range(self.heads)]
-
+            one_head = [enc_pad.data.new(l).zero_() + (1 / l) for l in enc_len]
+            one_head = pad_sequence(one_head, batch_first=True, padding_value=0)
+            att_prev = [one_head] + [one_head.clone() for _ in range(self.heads - 1)]
         cs, ws = [], []
         for h in range(self.heads):
             #att_prev: batch_size x frame
             att_prev_pad = F.pad(att_prev[h].view(batch_size, 1, 1, self.enc_length), self.padding)
-            att_conv = self.loc_conv[h](att_prev_pad[h])
+            att_conv = self.loc_conv[h](att_prev_pad)
             # att_conv: batch_size x channel x 1 x frame -> batch_size x frame x channel
             att_conv = att_conv.squeeze(2).transpose(1, 2)
             # att_conv: batch_size x frame x channel -> batch_size x frame x att_dim
@@ -182,24 +187,119 @@ class MultiHeadAttLoc(torch.nn.Module):
         c = self.mlp_o(torch.cat(cs, dim=1))
         return c, ws 
 
-class Decoder(torch.nn.Module):
-    def __init__(self, output_dim, hidden_dim, encoder_dim, att_module, att_odim, bos_index, eos_index):
-        self.bos_index, self.eos_index = bos_index, eos_index
-        self.emb = torch.nn.Embedding(output_dim, hidden_dim)
-        self.LSTMcell = torch.nn.LSTMCell(att_odim + hidden_dim, hidden_dim)
-        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
-        self.attention = att_module
+class StateTransform(torch.nn.Module):
+    def __init__(self, idim, odim):
+        super(StateTransform, self).__init__()
+        self.fcz = torch.nn.Linear(idim, odim)
+        self.fcc = torch.nn.Linear(idim, odim)
 
-    def zero_state(self, )
-    def forward(self, )
-        
-        
+    def forward(self, z):
+        dec_init_z = F.relu(self.fcz(z))
+        dec_init_c = F.relu(self.fcc(z))
+        return dec_init_z, dec_init_c
+
+class Decoder(torch.nn.Module):
+    def __init__(self, output_dim, hidden_dim, encoder_dim, attention, att_odim, bos, eos, pad):
+        super(Decoder, self).__init__()
+        self.bos, self.eos, self.pad = bos, eos, pad
+        # 3 is bos, eos, pad
+        self.embedding = torch.nn.Embedding(output_dim + 3, hidden_dim, padding_idx=pad)
+        self.LSTMCell = torch.nn.LSTMCell(att_odim + hidden_dim, hidden_dim)
+        # 3 is bos, eos, pad
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim + 3)
+        self.attention = attention
+
+    def forward(self, enc_pad, enc_len, ys, dec_init_state, tf_rate=1.0):
+        # prepare input and output sequences
+        bos = ys[0].data.new([self.bos])
+        eos = ys[0].data.new([self.eos])
+        ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+        ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+        pad_ys_in = pad_list(ys_in, pad_value=self.pad)
+        pad_ys_out = pad_list(ys_out, pad_value=self.pad)
+        # get length info
+        batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
+
+        # map idx to embedding
+        eys = self.embedding(pad_ys_in)
+
+        # loop for each timestep
+        dec_z, dec_c = dec_init_state
+        ws = None
+        outputs, ws_list = [], []
+        # reset the attention module
+        self.attention.reset()
+        for t in range(olength):
+            # teacher forcing
+            tf = True if np.random.random_sample() < tf_rate else False
+            c, ws = self.attention(enc_pad, enc_len, dec_z, ws)
+            ws_list.append(ws)
+            emb = eys[:, t, :] if tf or t == 0 else self.embedding(torch.argmax(outputs[-1], dim=-1))
+            cell_inp = torch.cat([emb, c], dim=-1)
+            dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+            output = self.output_layer(dec_z)
+            outputs.append(output)
+        outputs = torch.stack(outputs, dim=1)
+        log_probs = F.log_softmax(outputs, dim=1)
+        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze_(2)
+        return ys_log_probs, ws_list
+
+class E2E(torch.nn.Module):
+    def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
+            dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
+            output_dim, pad=0, bos=1, eos=2, heads=4):
+        super(E2E, self).__init__()
+        # encoder to encode acoustic features
+        self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
+                n_layers=enc_n_layers, subsample=subsample, dropout_rate=dropout_rate)
+        # transform encoder's last output to decoder hidden_dim 
+        self.state_transform = StateTransform(enc_hidden_dim * 2, dec_hidden_dim)
+        # attention module
+        self.attention = MultiHeadAttLoc(encoder_dim=enc_hidden_dim * 2, 
+                decoder_dim=dec_hidden_dim, att_dim=att_dim, 
+                conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
+                heads=heads, att_odim=att_odim)
+        # decoder to generate words (or other units) 
+        self.decoder = Decoder(output_dim=output_dim, hidden_dim=dec_hidden_dim, 
+                encoder_dim=enc_hidden_dim, attention=self.attention, 
+                att_odim=att_odim, bos=bos, eos=eos, pad=pad)
+
+    def forward(self, data, ilens, ys):
+        enc_h, enc_lens = self.encoder(data, ilens)
+        dec_h, dec_c = self.state_transform(enc_h[:, -1])
+        log_prob, ws_list = self.decoder(enc_h, enc_lens, ys, (dec_h, dec_c))
+        print(log_prob.size())
+
+# just for debugging
+def get_data(root_dir='/storage/feature/LibriSpeech/npy_files/train-clean-100/7402/90848', text_index_path='/storage/feature/LibriSpeech/text_bpe/train-clean-100/7402/7402-90848.label.txt'):
+    prefix = '7402-90848'
+    datas = []
+    for i in range(4):
+        seg_id = str(i).zfill(4)
+        filename = f'{prefix}-{seg_id}.npy'
+        path = os.path.join(root_dir, filename)
+        data = torch.from_numpy(np.load(path)).type(torch.FloatTensor)
+        datas.append(data)
+    datas.sort(key=lambda x: x.size(0), reverse=True)
+    ilens = np.array([data.size(0) for data in datas], dtype=np.int64)
+    datas = pad_sequence(datas, batch_first=True, padding_value=0)
+
+    ys = []
+    with open(text_index_path, 'r') as f:
+        for line in f:
+            utt_id, indexes = line.strip().split(',', maxsplit=1)
+            indexes = cc(torch.Tensor([int(index) + 3 for index in indexes.split()]).type(torch.LongTensor))
+            ys.append(indexes)
+    return datas, ilens, ys[:4]
 
 if __name__ == '__main__':
-    data = cc(torch.randn(16, 1500, 40))
-    ilens = np.ones((16,), dtype=np.int64) * 1000
-    enc = cc(Encoder(40, 320, 4, [1, 2, 2, 1], dropout_rate=0.3))
-    output, ilens = net(data, ilens)
+    data, ilens, ys = get_data()
+    data = cc(data)
+    model = cc(E2E(input_dim=40, enc_hidden_dim=320, enc_n_layers=4, 
+        subsample=[1, 2, 1, 1], dropout_rate=0.3, 
+        dec_hidden_dim=320, att_dim=512, conv_channels=10, 
+        conv_kernel_size=201, att_odim=320, output_dim=500))
+    model(data, ilens, ys)
     #att = cc(AttLoc(640, 320, 300, 100, 10))
     #att.reset()
     #dec = cc(Variable(torch.randn(32, 320)))
