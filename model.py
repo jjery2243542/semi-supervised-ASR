@@ -209,45 +209,58 @@ class Decoder(torch.nn.Module):
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim + 3)
         self.attention = attention
 
-    def forward(self, enc_pad, enc_len, ys, dec_init_state, tf_rate=1.0):
-        # prepare input and output sequences
-        bos = ys[0].data.new([self.bos])
-        eos = ys[0].data.new([self.eos])
-        ys_in = [torch.cat([bos, y], dim=0) for y in ys]
-        ys_out = [torch.cat([y, eos], dim=0) for y in ys]
-        pad_ys_in = pad_list(ys_in, pad_value=self.pad)
-        pad_ys_out = pad_list(ys_out, pad_value=self.pad)
-        # get length info
-        batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
-
-        # map idx to embedding
-        eys = self.embedding(pad_ys_in)
-
+    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_decoder_timesteps=100):
+        batch_size = enc_pad.size(0)
+        if ys is not None:
+            # prepare input and output sequences
+            bos = ys[0].data.new([self.bos])
+            eos = ys[0].data.new([self.eos])
+            ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+            ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+            pad_ys_in = pad_list(ys_in, pad_value=self.pad)
+            pad_ys_out = pad_list(ys_out, pad_value=self.pad)
+            # get length info
+            batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
+            # map idx to embedding
+            eys = self.embedding(pad_ys_in)
+        else:
+            pseudo_ys_in = [cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))]
         # loop for each timestep
         dec_z, dec_c = dec_init_state
         ws = None
-        outputs, ws_list = [], []
+        logits, prediction, ws_list = [], [], []
         # reset the attention module
         self.attention.reset()
         for t in range(olength):
-            # teacher forcing
-            tf = True if np.random.random_sample() < tf_rate else False
+            # run attention module
             c, ws = self.attention(enc_pad, enc_len, dec_z, ws)
             ws_list.append(ws)
-            emb = eys[:, t, :] if tf or t == 0 else self.embedding(torch.argmax(outputs[-1], dim=-1))
+            # supervised learning: using teacher forcing
+            if ys is not None:
+                # teacher forcing
+                tf = True if np.random.random_sample() < tf_rate else False
+                emb = eys[:, t, :] if tf or t == 0 else self.embedding(prediction[-1])
+            # else, label the data with greedy alg
+            else:
+                emb = self.embedding(pseudo_ys_in[-1])
             cell_inp = torch.cat([emb, c], dim=-1)
             dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-            output = self.output_layer(dec_z)
-            outputs.append(output)
-        outputs = torch.stack(outputs, dim=1)
-        log_probs = F.log_softmax(outputs, dim=1)
+            logit = self.output_layer(dec_z)
+            logits.append(logit)
+            prediction.append(torch.argmax(logit, dim=-1))
+            # maintain pseudo input for SSL
+            if ys is None:
+                pseudo_ys_in.append(prediction[-1])
+        logits = torch.stack(logits, dim=1)
+        log_probs = F.log_softmax(logits, dim=1)
         ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze_(2)
-        return ys_log_probs, ws_list
+        prediction = torch.stack(prediction, dim=1)
+        return ys_log_probs, prediction, ws_list
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
-            output_dim, pad=0, bos=1, eos=2, heads=4):
+            output_dim, pad=0, bos=1, eos=2, heads=4, tf_rate=0.8):
         super(E2E, self).__init__()
         # encoder to encode acoustic features
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
@@ -261,14 +274,13 @@ class E2E(torch.nn.Module):
                 heads=heads, att_odim=att_odim)
         # decoder to generate words (or other units) 
         self.decoder = Decoder(output_dim=output_dim, hidden_dim=dec_hidden_dim, 
-                encoder_dim=enc_hidden_dim, attention=self.attention, 
+                encoder_dim=enc_hidden_dim, attention=self.attention,
                 att_odim=att_odim, bos=bos, eos=eos, pad=pad)
 
     def forward(self, data, ilens, ys):
         enc_h, enc_lens = self.encoder(data, ilens)
         dec_h, dec_c = self.state_transform(enc_h[:, -1])
-        log_prob, ws_list = self.decoder(enc_h, enc_lens, ys, (dec_h, dec_c))
-        print(log_prob.size())
+        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys)
 
 # just for debugging
 def get_data(root_dir='/storage/feature/LibriSpeech/npy_files/train-clean-100/7402/90848', text_index_path='/storage/feature/LibriSpeech/text_bpe/train-clean-100/7402/7402-90848.label.txt'):
