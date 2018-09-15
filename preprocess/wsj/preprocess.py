@@ -9,9 +9,15 @@ import subprocess
 import json
 import kaldi_io
 import pickle
+import glob
 
 def load_data(directory):
-    feature = {key: mat for key, mat in kaldi_io.read_mat_scp(os.path.join(directory, 'feats.scp'))}
+    all_feature = {}
+    for ark_file in sorted(glob.glob(os.path.join(directory, '*.ark'))):
+        print(f'loading {ark_file}...')
+        feature = {key: mat for key, mat in kaldi_io.read_mat_ark(os.path.join(directory, ark_file))}
+        all_feature = {**all_feature, **feature}
+    print(f'total {len(all_feature)} utterances')
     with open(os.path.join(directory, 'data.json')) as f:
         data = json.load(f)
     return feature, data
@@ -28,15 +34,13 @@ def load_dict(dict_path):
             vocab_dict[sym] = new_ind
     return vocab_dict
 
-def store_data(output_dict, feature, data_dict):
+def get_token_ids(data_dict):
+    data = {}
     for utt_id in data_dict['utts']:
         # 2 is <BLANK>, <UNK>
         token_ids = [int(token_id) - 2 for token_id in data_dict['utts'][utt_id]['output'][0]['tokenid'].split()]
-        features = feature[utt_id]
-        output_dict[utt_id] = {}
-        output_dict[utt_id]['feature'] = features
-        output_dict[utt_id]['token_ids'] = token_ids
-    return 
+        data[utt_id] = token_ids
+    return data
 
 #def collect_text(data_dict):
 #    sents = []
@@ -65,18 +69,16 @@ if __name__ == '__main__':
     # process data
     in_dir = 'deltafalse'
     for i, dset in enumerate(dsets):
-        data = {}
         print(f'processing {dset}...')
         directory = os.path.join(root_dir, f'{dset}/{in_dir}')
         print('load data...')
         feature, data_dict = load_data(directory)
-        store_data(data, feature, data_dict)
-        del feature, data_dict
+        token_ids = get_token_ids(data_dict)
+        data = {'feature': feature, 'token_ids': token_ids}
+        print('dump data...')
         data_output_path = os.path.join(output_dir, f'{dset}.pkl')
         with open(data_output_path, 'wb') as f:
-            pickle.dump(data, f)
-        del data
-
+            pickle.dump(data, f, protocol=2)
         '''
         deprecate
         '''
