@@ -49,31 +49,6 @@ class VGG2L(torch.nn.Module):
         xs = xs.contiguous().view(xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
         return xs, ilens
 
-#class pBLSTMLayer(torch.nn.Module):
-#    def __init__(self, input_dim, hidden_dim, subsample, dropout_rate):
-#        super(pBLSTMLayer, self).__init__()
-#        self.subsample = subsample
-#        if subsample > 0:
-#            self.BLSTM = torch.nn.LSTM(input_dim*2, hidden_dim, 1, bidirectional=True,
-#                    dropout=dropout_rate, batch_first=True)
-#        else:
-#            self.BLSTM = torch.nn.LSTM(input_dim, hidden_dim, 1, bidirectional=True,
-#                    dropout=dropout_rate, batch_first=True)
-#
-#    def forward(self, x):
-#        # x = [batch_size, frames, feature_dim]
-#        batch_size = x.size(0)
-#        timesteps = x.size(1)
-#        input_dim = x.size(2)
-#        if self.subsample > 0 and timesteps % 2 == 0:
-#            x = x.contiguous().view(batch_size, timesteps//2, input_dim*2)
-#        elif self.subsample > 0:
-#            # pad one frame
-#            x = _pad_one_frame(x)
-#            x = x.contiguous().view(batch_size, timesteps//2+1, input_dim*2)
-#        output, hidden = self.BLSTM(x)
-#        return output, hidden
-
 class pBLSTM(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate):
         super(pBLSTM, self).__init__()
@@ -92,14 +67,16 @@ class pBLSTM(torch.nn.Module):
             xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
             xs, (_, _) = layer(xpack)
             xpad, ilens = pad_packed_sequence(xs, batch_first=True)
-            xpad = dropout_layer(xpad)
+            #xpad = dropout_layer(xpad)
+            dropout_layer(xpad)
             ilens = ilens.numpy()
             # subsampling
             sub = self.subsample[i]
             if sub > 1:
                 xpad = xpad[:, ::sub]
                 ilens = [(length + 1) // sub for length in ilens]
-        ilens = ilens.tolist()
+        # type to list of int
+        ilens = np.array(ilens, dtype=np.int64).tolist()
         return xpad, ilens
 
 class Encoder(torch.nn.Module):
@@ -199,17 +176,18 @@ class StateTransform(torch.nn.Module):
         return dec_init_z, dec_init_c
 
 class Decoder(torch.nn.Module):
-    def __init__(self, output_dim, hidden_dim, encoder_dim, attention, att_odim, bos, eos, pad):
+    def __init__(self, output_dim, hidden_dim, encoder_dim, attention, att_odim, dropout_rate, bos, eos, pad):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
         # 3 is bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim + 3, hidden_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(att_odim + hidden_dim, hidden_dim)
         # 3 is bos, eos, pad
+        self.dropout = torch.nn.Dropout(p=dropout_rate, inplace=True)
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim + 3)
         self.attention = attention
 
-    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_decoder_timesteps=100):
+    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_dec_timesteps=100):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -223,14 +201,13 @@ class Decoder(torch.nn.Module):
             batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
             # map idx to embedding
             eys = self.embedding(pad_ys_in)
-        else:
-            pseudo_ys_in = [cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))]
         # loop for each timestep
         dec_z, dec_c = dec_init_state
         ws = None
         logits, prediction, ws_list = [], [], []
         # reset the attention module
         self.attention.reset()
+        olength = max_dec_timesteps if not ys else olength
         for t in range(olength):
             # run attention module
             c, ws = self.attention(enc_pad, enc_len, dec_z, ws)
@@ -240,27 +217,31 @@ class Decoder(torch.nn.Module):
                 # teacher forcing
                 tf = True if np.random.random_sample() < tf_rate else False
                 emb = eys[:, t, :] if tf or t == 0 else self.embedding(prediction[-1])
-            # else, label the data with greedy alg
+            # else, label the data with greedy
             else:
-                emb = self.embedding(pseudo_ys_in[-1])
+                if t == 0:
+                    bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
+                    emb = self.embedding(bos)
+                else:
+                    emb = self.embedding(prediction[-1])
             cell_inp = torch.cat([emb, c], dim=-1)
             dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
             logit = self.output_layer(dec_z)
             logits.append(logit)
             prediction.append(torch.argmax(logit, dim=-1))
-            # maintain pseudo input for SSL
-            if ys is None:
-                pseudo_ys_in.append(prediction[-1])
         logits = torch.stack(logits, dim=1)
         log_probs = F.log_softmax(logits, dim=1)
-        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze_(2)
         prediction = torch.stack(prediction, dim=1)
+        if ys:
+            ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze_(2)
+        else:
+            ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze_(2)
         return ys_log_probs, prediction, ws_list
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
-            output_dim, pad=0, bos=1, eos=2, heads=4, tf_rate=0.8):
+            output_dim, pad=0, bos=1, eos=2, heads=4):
         super(E2E, self).__init__()
         # encoder to encode acoustic features
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
@@ -274,53 +255,47 @@ class E2E(torch.nn.Module):
                 heads=heads, att_odim=att_odim)
         # decoder to generate words (or other units) 
         self.decoder = Decoder(output_dim=output_dim, hidden_dim=dec_hidden_dim, 
-                encoder_dim=enc_hidden_dim, attention=self.attention,
-                att_odim=att_odim, bos=bos, eos=eos, pad=pad)
+                encoder_dim=enc_hidden_dim, attention=self.attention, 
+                dropout_rate=dropout_rate, att_odim=att_odim, 
+                bos=bos, eos=eos, pad=pad)
 
-    def forward(self, data, ilens, ys):
+    def forward(self, data, ilens, ys, tf_rate=1.0):
         enc_h, enc_lens = self.encoder(data, ilens)
         dec_h, dec_c = self.state_transform(enc_h[:, -1])
-        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys)
+        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys, tf_rate=tf_rate)
+        return log_probs, prediction, ws_list
 
-# just for debugging
-def get_data(root_dir='/storage/feature/LibriSpeech/npy_files/train-clean-100/7402/90848', text_index_path='/storage/feature/LibriSpeech/text_bpe/train-clean-100/7402/7402-90848.label.txt'):
-    prefix = '7402-90848'
-    datas = []
-    for i in range(4):
-        seg_id = str(i).zfill(4)
-        filename = f'{prefix}-{seg_id}.npy'
-        path = os.path.join(root_dir, filename)
-        data = torch.from_numpy(np.load(path)).type(torch.FloatTensor)
-        datas.append(data)
-    datas.sort(key=lambda x: x.size(0), reverse=True)
-    ilens = np.array([data.size(0) for data in datas], dtype=np.int64)
-    datas = pad_sequence(datas, batch_first=True, padding_value=0)
-
-    ys = []
-    with open(text_index_path, 'r') as f:
-        for line in f:
-            utt_id, indexes = line.strip().split(',', maxsplit=1)
-            indexes = cc(torch.Tensor([int(index) + 3 for index in indexes.split()]).type(torch.LongTensor))
-            ys.append(indexes)
-    return datas, ilens, ys[:4]
 
 if __name__ == '__main__':
+    # just for debugging
+    def get_data(root_dir='/storage/feature/LibriSpeech/npy_files/train-clean-100/7402/90848', text_index_path='/storage/feature/LibriSpeech/text_bpe/train-clean-100/7402/7402-90848.label.txt'):
+        prefix = '7402-90848'
+        datas = []
+        for i in range(8):
+            seg_id = str(i).zfill(4)
+            filename = f'{prefix}-{seg_id}.npy'
+            path = os.path.join(root_dir, filename)
+            data = torch.from_numpy(np.load(path)).type(torch.FloatTensor)
+            datas.append(data)
+        datas.sort(key=lambda x: x.size(0), reverse=True)
+        ilens = np.array([data.size(0) for data in datas], dtype=np.int64)
+        datas = pad_sequence(datas, batch_first=True, padding_value=0)
+
+        ys = []
+        with open(text_index_path, 'r') as f:
+            for line in f:
+                utt_id, indexes = line.strip().split(',', maxsplit=1)
+                indexes = cc(torch.Tensor([int(index) + 3 for index in indexes.split()]).type(torch.LongTensor))
+                ys.append(indexes)
+        return datas, ilens, ys[:8]
     data, ilens, ys = get_data()
     data = cc(data)
-    model = cc(E2E(input_dim=40, enc_hidden_dim=320, enc_n_layers=4, 
-        subsample=[1, 2, 1, 1], dropout_rate=0.3, 
-        dec_hidden_dim=320, att_dim=512, conv_channels=10, 
-        conv_kernel_size=201, att_odim=320, output_dim=500))
-    model(data, ilens, ys)
-    #att = cc(AttLoc(640, 320, 300, 100, 10))
-    #att.reset()
-    #dec = cc(Variable(torch.randn(32, 320)))
-    #context, weights = att(output, dec, None)
-    #print(context.size(), weights.size(), weights[0])
-    #dec = cc(Variable(torch.randn(32, 320)))
-    #context, weights = att(output, dec, weights)
-    #print(context.size(), weights.size(), weights[0])
-    #dec = cc(Variable(torch.randn(32, 320)))
-    #context, weights = att(output, dec, weights)
-    #print(context.size(), weights.size(), weights[0])
+    model = cc(E2E(input_dim=40, enc_hidden_dim=800, enc_n_layers=3, 
+        subsample=[1, 2, 1], dropout_rate=0.3, 
+        dec_hidden_dim=1024, att_dim=512, conv_channels=10, 
+        conv_kernel_size=201, att_odim=800, output_dim=500))
+    log_probs, prediction, ws_list = model(data, ilens, ys)
+    p_lens = [p.size() for p in prediction]
+    t_lens = [t.size() for t in ys]
+    print(p_lens, t_lens)
 

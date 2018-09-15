@@ -1,4 +1,6 @@
 import torch 
+import numpy as np
+from tensorboardX import SummaryWriter
 
 def cc(net):
     if torch.cuda.is_available():
@@ -15,6 +17,7 @@ def pad_list(xs, pad_value=0):
     return pad
 
 def _seq_mask(seq_len, max_len):
+    seq_len = torch.from_numpy(np.array(seq_len))
     batch_size = seq_len.size(0)
     seq_range = torch.range(0, max_len - 1).long()
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
@@ -22,3 +25,11 @@ def _seq_mask(seq_len, max_len):
         seq_range_expand = seq_range_expand.cuda()
     seq_len_expand = seq_len.unsqueeze(1).expand_as(seq_range_expand)
     return (seq_range_expand < seq_len_expand).float()
+
+
+class Logger(object):
+    def __init__(self, logdir='./log'):
+        self.writer = SummaryWriter(logdir)
+
+    def scalar_summary(self, tag, value, step):
+        self.writer.add_scalar(tag, value, step)

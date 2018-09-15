@@ -1,5 +1,0 @@
-tmp_dir=/tmp/
-bpe_code_path=../../processed_data/bpe_code_file.txt
-vocab_path=../../processed_data/vocab.txt
-librispeech_dir=/storage/datasets/LibriSpeech/LibriSpeech/
-label_dir=/storage/feature/LibriSpeech/text_bpe/

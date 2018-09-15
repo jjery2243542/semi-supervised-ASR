@@ -16,7 +16,8 @@ class PickleDataset(Dataset):
     def __getitem__(self, index):
         utt_id = self.keys[index]
         features = self.data_dict[utt_id]['fbank']
-        text = self.data_dict[utt_id]['bpe']
+        # pad, bos, eos
+        text = self.data_dict[utt_id]['bpe'] + 3
         return features, text
 
 class PartedDataset(Dataset):
@@ -68,6 +69,6 @@ if __name__ == '__main__':
     print(len(ds))
     print(len(part))
     features, text = part[0]
-    print(features.shape, text.shape, type(features), type(text))
+    print(features.shape, text.shape, type(features), type(text), text)
     
 

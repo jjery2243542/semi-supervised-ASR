@@ -1,5 +1,0 @@
-sample_rate=16000
-num_mel_bins=40
-librispeech_dir=/storage/datasets/LibriSpeech/LibriSpeech
-tmp_dir=/tmp
-npy_dir=/storage/feature/LibriSpeech/npy_files

@@ -25,7 +25,7 @@ class PartLoaderIter:
                                batch_size=self.batch_size,
                                shuffle=self.shuffle,
                                collate_fn=_collate_fn,
-                               num_workers=4))
+                               num_workers=0))
 
     def __len__(self):
         return self.loader._len
@@ -47,7 +47,7 @@ class PartLoader:
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.in_loader = DataLoader(dataset, batch_size=1, shuffle=shuffle,
-                                    num_workers=1, collate_fn=lambda x: x)
+                                    num_workers=0, collate_fn=lambda x: x)
 
         self._len = self.dataset.batch_count(self.batch_size)
 
@@ -63,7 +63,7 @@ if __name__ == '__main__':
             'max_text_length': 100,
             'min_text_length': 2}
     ds = PartedDataset('/storage/feature/LibriSpeech/packed/train-clean-360/', config=config)
-    data_loader = PartLoader(ds, batch_size=32, shuffle=False)
+    data_loader = PartLoader(ds, batch_size=32, shuffle=True)
     print(len(data_loader))
     for data in data_loader:
         print(data[0].size(), len(data[1]), len(data[2]), data[2][0].size())
