@@ -23,13 +23,14 @@ def load_data(directory):
     return feature, data
 
 def load_dict(dict_path):
-    vocab_dict = {}
+    vocab_dict = {'<PAD>':0, '<BOS>':1, '<EOS>':2}
     with open(dict_path) as f:
         for i, line in enumerate(f):
             # no UNK in character-based 
             if i == 0:
                 continue
             sym, ind = line.strip().split(maxsplit=1)
+            # 2 for <BLANK>, <UNK>, 3 for <PAD>, <BOS>, <EOS>
             new_ind = int(ind) - 2 + 3
             vocab_dict[sym] = new_ind
     return vocab_dict
@@ -45,8 +46,9 @@ def load_non_lang_sym(path):
 def get_token_ids(data_dict):
     data = {}
     for utt_id in data_dict['utts']:
-        # 2 is <BLANK>, <UNK>
-        token_ids = [int(token_id) - 2 for token_id in data_dict['utts'][utt_id]['output'][0]['tokenid'].split()]
+        ori_token_ids = data_dict['utts'][utt_id]['output'][0]['tokenid'].split()
+        # 2 for <BLANK>, <UNK>, 3 for <PAD>, <BOS>, <EOS>
+        token_ids = [int(token_id) - 2 + 3 for token_id in ori_token_ids]
         data[utt_id] = token_ids
     return data
 
