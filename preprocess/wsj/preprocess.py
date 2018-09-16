@@ -30,9 +30,17 @@ def load_dict(dict_path):
             if i == 0:
                 continue
             sym, ind = line.strip().split(maxsplit=1)
-            new_ind = int(ind) - 2
+            new_ind = int(ind) - 2 + 3
             vocab_dict[sym] = new_ind
     return vocab_dict
+
+def load_non_lang_sym(path):
+    syms = []
+    with open(path) as f:
+        for line in f:
+            sym = line.strip()
+            syms.append(sym)
+    return syms
 
 def get_token_ids(data_dict):
     data = {}
@@ -57,21 +65,28 @@ def merge_data(feature, token_ids):
 #    return sents
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
+    if len(sys.argv) < 6:
         print('usage: python3 preprocess.py [root_dir] [dsets (ex. train_si84,train_si284...)] [dict_path] '
-                '[output_dir]')
+                '[non language symbol path] [output_dir]')
 
     root_dir = sys.argv[1]
     dsets = sys.argv[2].strip().split(',')
     dict_path = sys.argv[3]
-    output_dir = sys.argv[4]
+    non_lan_sym_path = sys.argv[4]
+    output_dir = sys.argv[5]
 
     # dump dict
     vocab_dict = load_dict(dict_path)
     dict_output_path = os.path.join(output_dir, 'vocab_dict.pkl')
     with open(dict_output_path, 'wb') as f:
         pickle.dump(vocab_dict, f)
-    
+
+    # load non-lang sym
+    non_lang_syms = load_non_lang_sym(non_lan_sym_path)
+    non_lang_syms_output_path = os.path.join(output_dir, 'non_lang_syms.pkl')
+    with open(non_lang_syms_output_path, 'wb') as f:
+        pickle.dump(non_lang_syms, f)
+
     # process data
     in_dir = 'deltafalse'
     for i, dset in enumerate(dsets):
