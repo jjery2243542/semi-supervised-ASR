@@ -12,12 +12,12 @@ import pickle
 import glob
 
 def load_data(directory):
-    all_feature = {}
+    feature = {}
     for ark_file in sorted(glob.glob(os.path.join(directory, '*.ark'))):
         print(f'loading {ark_file}...')
-        feature = {key: mat for key, mat in kaldi_io.read_mat_ark(os.path.join(directory, ark_file))}
-        all_feature = {**all_feature, **feature}
-    print(f'total {len(all_feature)} utterances')
+        for key, mat in kaldi_io.read_mat_ark(os.path.join(directory, ark_file)):
+            feature[key] = mat
+
     with open(os.path.join(directory, 'data.json')) as f:
         data = json.load(f)
     return feature, data
@@ -40,6 +40,12 @@ def get_token_ids(data_dict):
         # 2 is <BLANK>, <UNK>
         token_ids = [int(token_id) - 2 for token_id in data_dict['utts'][utt_id]['output'][0]['tokenid'].split()]
         data[utt_id] = token_ids
+    return data
+
+def merge_data(feature, token_ids):
+    data = {}
+    for utt_id in feature:
+        data[utt_id] = {'feature': feature[utt_id], 'token_ids': token_ids[utt_id]}
     return data
 
 #def collect_text(data_dict):
@@ -74,11 +80,12 @@ if __name__ == '__main__':
         print('load data...')
         feature, data_dict = load_data(directory)
         token_ids = get_token_ids(data_dict)
-        data = {'feature': feature, 'token_ids': token_ids}
+        data = merge_data(feature, token_ids)
+        print(f'total utterance={len(data)}')
         print('dump data...')
         data_output_path = os.path.join(output_dir, f'{dset}.pkl')
         with open(data_output_path, 'wb') as f:
-            pickle.dump(data, f, protocol=2)
+            pickle.dump(data, f)
         '''
         deprecate
         '''
