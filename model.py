@@ -187,7 +187,7 @@ class Decoder(torch.nn.Module):
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim + 3)
         self.attention = attention
 
-    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_dec_timesteps=100):
+    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_dec_timesteps=500):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -259,10 +259,11 @@ class E2E(torch.nn.Module):
                 dropout_rate=dropout_rate, att_odim=att_odim, 
                 bos=bos, eos=eos, pad=pad)
 
-    def forward(self, data, ilens, ys, tf_rate=1.0):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200):
         enc_h, enc_lens = self.encoder(data, ilens)
         dec_h, dec_c = self.state_transform(enc_h[:, -1])
-        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys, tf_rate=tf_rate)
+        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys, 
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps)
         return log_probs, prediction, ws_list
 
 

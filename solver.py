@@ -3,9 +3,10 @@ import numpy as np
 from model import E2E
 from dataloader import get_data_loader
 from dataset import PickleDataset
-from utils import cc, _seq_mask, Logger
+from utils import cc, _seq_mask, remove_pad_eos, ind2character, calculate_cer, char_list_to_str, Logger
 import yaml
 import os
+import pickle
 
 class Solver(object):
     def __init__(self, config):
@@ -17,6 +18,9 @@ class Solver(object):
 
         # logger
         self.logger = Logger(config['logdir'])
+
+        # load vocab and non lang syms
+        self.load_vocab()
 
         # get data loader 
         self.get_data_loaders()
@@ -30,6 +34,13 @@ class Solver(object):
         if len(self.model_kept) > self.max_kept:
             os.remove(self.model_kept[0])
             self.model_kept.pop(0)
+        return
+
+    def load_vocab(self):
+        with open(self.config['vocab_path'], 'rb') as f:
+            self.vocab = pickle.load(f)
+        with open(self.config['non_lang_syms_path'], 'rb') as f:
+            self.non_lang_syms = pickle.load(f)
         return
 
     def load_model(self, model_path):
@@ -53,7 +64,7 @@ class Solver(object):
         # get dev dataset
         dev_set = self.config['dev_set']
         # do not sort dev set
-        dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), config=self.config, sort=False)
+        dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), config=self.config)
         self.dev_loader = get_data_loader(dev_dataset, batch_size=self.config['batch_size'], shuffle=False)
         return
 
@@ -68,8 +79,11 @@ class Solver(object):
             conv_channels=self.config['conv_channels'],
             conv_kernel_size=self.config['conv_kernel_size'],
             att_odim=self.config['att_odim'],
-            output_dim=self.config['output_dim'],
-            heads=self.config['heads']
+            output_dim=len(self.vocab),
+            heads=self.config['heads'],
+            pad=self.vocab['<PAD>'],
+            bos=self.vocab['<BOS>'],
+            eos=self.vocab['<EOS>']
             ))
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], amsgrad=True)
         return
@@ -84,37 +98,73 @@ class Solver(object):
 
     def sup_train_one_epoch(self, epoch):
         total_steps = len(self.train_lab_loader)
+        total_loss = 0.
         for train_steps, data in enumerate(self.train_lab_loader):
             xs, ilens, ys = data
             # transfer to cuda 
             xs = cc(xs)
             ys = [cc(y) for y in ys]
             # input the model
-            log_probs, prediction, ws_list = self.model(xs, ilens, ys)
+            log_probs, prediction, _ = self.model(xs, ilens, ys)
 
             # mask and calculate loss
             loss = self.mask_and_cal_loss(log_probs, ys)
+            total_loss += loss.item()
 
             # calculate gradients 
             self.opt.zero_grad()
             loss.backward()
             self.opt.step()
             # print message
-            print(f'[{train_steps + 1}/{total_steps}], loss: {loss:.3f}')
-
+            print(f'[{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             if (train_steps + 1) % self.config['summary_steps'] == 0:
                 # add to logger
                 self.logger.scalar_summary(tag=self.config['tag'], value=loss.item(), 
                         step=epoch * total_steps + train_steps + 1)
-        return
+        return total_loss / total_steps
+
+    def validation(self):
+        self.model.eval()
+        all_prediction, all_ys = [], []
+        for step, data in enumerate(self.dev_loader):
+            xs, ilens, ys = data
+            xs = cc(xs)
+            # max length in ys
+            max_dec_timesteps = max([y.size(0) for y in ys])
+            # feed previous
+            log_probs, prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps)
+            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
+            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
+        self.model.train()
+        # remove eos and pad
+        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
+        # indexes to characters
+        prediction_char = ind2character(prediction_til_eos, self.non_lang_syms, self.vocab) 
+        ground_truth_char = ind2character(all_ys, self.non_lang_syms, self.vocab)
+        cer = calculate_cer(prediction_char, ground_truth_char)
+        return cer, prediction_char, ground_truth_char
 
     def sup_train(self):
-        for epoch in range(self.config['n_epochs']):
-            self.sup_train_one_epoch(epoch)
+        for epoch in range(self.config['epochs']):
+            avg_loss = self.sup_train_one_epoch(epoch)
             # validation
+            cer, prediction_char, ground_truth_char = self.validation()
+            print(f'epoch: {epoch}, avg_loss={avg_loss:.4f}, CER={cer:.4f}')
+            # add to tensorboard
+            self.logger.scalar_summary('cer', cer, epoch)
+            prediction_sents = char_list_to_str(prediction_char) 
+            ground_truth_sents = char_list_to_str(ground_truth_char)
+            # only add first 3 samples
+            lead_n = 3
+            for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
+                self.logger.text_summary(f'prediction-{i}', p, epoch)
+                self.logger.text_summary(f'ground_truth-{i}', gt, epoch)
+            # save model 
+            model_path = os.path.join(self.config['model_dir'], 'test.pkl')
+            self.save_model(model_path)
 
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:
         config = yaml.load(f)
     solver = Solver(config)
-    solver.sup_train_one_epoch(0)
+    solver.sup_train()

@@ -40,8 +40,6 @@ class PickleDataset(Dataset):
     def __len__(self):
         return len(self.keys)
 
-
-
 #class PickleDataset(Dataset):
 #    def __init__(self, pickle_path, keys):
 #        with open(pickle_path, 'rb') as f:
