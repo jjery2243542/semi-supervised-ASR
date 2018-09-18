@@ -102,11 +102,8 @@ class MultiHeadAttLoc(torch.nn.Module):
         self.mlp_att = torch.nn.ModuleList([torch.nn.Linear(conv_channels, att_dim, bias=False) \
 		for _ in range(self.heads)])
         self.loc_conv = torch.nn.ModuleList([torch.nn.Conv2d(
-                1, conv_channels, (1, conv_kernel_size), bias=False) for _ in range(self.heads)])
-        if conv_kernel_size % 2 == 0:
-            self.padding = (conv_kernel_size // 2, conv_kernel_size // 2 - 1)
-        else:
-            self.padding = (conv_kernel_size // 2, conv_kernel_size // 2)
+                1, conv_channels, (1, 2 * conv_kernel_size + 1), 
+                padding=(0, conv_kernel_size), bias=False) for _ in range(self.heads)])
         self.gvec = torch.nn.ModuleList([torch.nn.Linear(att_dim, 1, bias=False) for _ in range(self.heads)])
         self.mlp_o = torch.nn.Linear(self.heads * encoder_dim, att_odim)
 
@@ -123,7 +120,7 @@ class MultiHeadAttLoc(torch.nn.Module):
         self.enc_h = None
         self.pre_compute_enc_h = None
 
-    def forward(self, enc_pad, enc_len, dec_z, att_prev, scaling=1.0):
+    def forward(self, enc_pad, enc_len, dec_z, att_prev, scaling=2.0):
         batch_size =enc_pad.size(0)
         if self.pre_compute_enc_h is None:
             self.enc_h = enc_pad
@@ -131,20 +128,19 @@ class MultiHeadAttLoc(torch.nn.Module):
             self.pre_compute_enc_h = [self.mlp_enc[h](self.enc_h) for h in range(self.heads)]
 
         if dec_z is None:
-            dec_z = enc_pad.data.new(batch_size, self.decoder_dim).zero_()
+            dec_z = enc_h.data.new(batch_size, self.decoder_dim).zero_()
         else:
             dec_z = dec_z.view(batch_size, self.decoder_dim)
 
         # initialize attention weights to uniform
         if att_prev is None:
-            one_head = [enc_pad.data.new(l).zero_() + (1 / l) for l in enc_len]
-            one_head = pad_sequence(one_head, batch_first=True, padding_value=0)
-            att_prev = [one_head] + [one_head.clone() for _ in range(self.heads - 1)]
+            att_prev = []
+            for h in range(self.heads):
+                att_prev += [pad_list([self.enc_h.new(l).fill_(1.0 / l) for l in enc_len], 0)]
         cs, ws = [], []
         for h in range(self.heads):
             #att_prev: batch_size x frame
-            att_prev_pad = F.pad(att_prev[h].view(batch_size, 1, 1, self.enc_length), self.padding)
-            att_conv = self.loc_conv[h](att_prev_pad)
+            att_conv = self.loc_conv[h](att_prev[h].view(batch_size, 1, 1, self.enc_length))
             # att_conv: batch_size x channel x 1 x frame -> batch_size x frame x channel
             att_conv = att_conv.squeeze(2).transpose(1, 2)
             # att_conv: batch_size x frame x channel -> batch_size x frame x att_dim
@@ -158,36 +154,42 @@ class MultiHeadAttLoc(torch.nn.Module):
             w = F.softmax(scaling * e, dim=1)
             ws.append(w)
             # w_expanded: batch_size x 1 x frame
-            w_expanded = w.unsqueeze(1)
-            c = torch.bmm(w_expanded, self.enc_h).squeeze(1)
+            w_expanded = w.unsqueeze(2)
+            c = torch.sum(self.enc_h * w_expanded, dim=1)
+            #c = torch.bmm(w_expanded, self.enc_h).squeeze(1)
             cs.append(c)
         c = self.mlp_o(torch.cat(cs, dim=1))
         return c, ws 
 
-class StateTransform(torch.nn.Module):
-    def __init__(self, idim, odim):
-        super(StateTransform, self).__init__()
-        self.fcz = torch.nn.Linear(idim, odim)
-        self.fcc = torch.nn.Linear(idim, odim)
-
-    def forward(self, z):
-        dec_init_z = F.relu(self.fcz(z))
-        dec_init_c = F.relu(self.fcc(z))
-        return dec_init_z, dec_init_c
+#class StateTransform(torch.nn.Module):
+#    def __init__(self, idim, odim):
+#        super(StateTransform, self).__init__()
+#        self.fcz = torch.nn.Linear(idim, odim)
+#        self.fcc = torch.nn.Linear(idim, odim)
+#
+#    def forward(self, z):
+#        dec_init_z = self.fcz(z)
+#        dec_init_c = self.fcc(z)
+#        return dec_init_z, dec_init_c
 
 class Decoder(torch.nn.Module):
-    def __init__(self, output_dim, hidden_dim, encoder_dim, attention, att_odim, dropout_rate, bos, eos, pad):
+    def __init__(self, output_dim, embedding_dim, hidden_dim, encoder_dim, 
+            attention, att_odim, dropout_rate, bos, eos, pad):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
         # 3 is bos, eos, pad
-        self.embedding = torch.nn.Embedding(output_dim + 3, hidden_dim, padding_idx=pad)
-        self.LSTMCell = torch.nn.LSTMCell(att_odim + hidden_dim, hidden_dim)
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+        self.LSTMCell = torch.nn.LSTMCell(att_odim + embedding_dim, hidden_dim)
         # 3 is bos, eos, pad
-        self.dropout = torch.nn.Dropout(p=dropout_rate, inplace=True)
-        self.output_layer = torch.nn.Linear(hidden_dim, output_dim + 3)
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
         self.attention = attention
 
-    def forward(self, enc_pad, enc_len, dec_init_state, ys=None, tf_rate=0.8, max_dec_timesteps=500):
+        self.hidden_dim = hidden_dim
+
+    def zero_state(self, enc_pad):
+        return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
+
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=0.8, max_dec_timesteps=500):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -195,18 +197,22 @@ class Decoder(torch.nn.Module):
             eos = ys[0].data.new([self.eos])
             ys_in = [torch.cat([bos, y], dim=0) for y in ys]
             ys_out = [torch.cat([y, eos], dim=0) for y in ys]
-            pad_ys_in = pad_list(ys_in, pad_value=self.pad)
+            pad_ys_in = pad_list(ys_in, pad_value=self.eos)
             pad_ys_out = pad_list(ys_out, pad_value=self.pad)
             # get length info
             batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
             # map idx to embedding
             eys = self.embedding(pad_ys_in)
-        # loop for each timestep
-        dec_z, dec_c = dec_init_state
+
+        # initialization
+        dec_c = self.zero_state(enc_pad)
+        dec_z = self.zero_state(enc_pad)
         ws = None
         logits, prediction, ws_list = [], [], []
         # reset the attention module
         self.attention.reset()
+
+        # loop for each timestep
         olength = max_dec_timesteps if not ys else olength
         for t in range(olength):
             # run attention module
@@ -215,7 +221,7 @@ class Decoder(torch.nn.Module):
             # supervised learning: using teacher forcing
             if ys is not None:
                 # teacher forcing
-                tf = True if np.random.random_sample() < tf_rate else False
+                tf = True if np.random.random_sample() <= tf_rate else False
                 emb = eys[:, t, :] if tf or t == 0 else self.embedding(prediction[-1])
             # else, label the data with greedy
             else:
@@ -229,40 +235,40 @@ class Decoder(torch.nn.Module):
             logit = self.output_layer(dec_z)
             logits.append(logit)
             prediction.append(torch.argmax(logit, dim=-1))
+
         logits = torch.stack(logits, dim=1)
-        log_probs = F.log_softmax(logits, dim=1)
+        log_probs = F.log_softmax(logits, dim=2)
         prediction = torch.stack(prediction, dim=1)
+
         if ys:
-            ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze_(2)
+            ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
         else:
-            ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze_(2)
+            ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze(2)
         return ys_log_probs, prediction, ws_list
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
-            output_dim, pad=0, bos=1, eos=2, heads=4):
+            embedding_dim, output_dim, pad=0, bos=1, eos=2, heads=4):
         super(E2E, self).__init__()
         # encoder to encode acoustic features
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
                 n_layers=enc_n_layers, subsample=subsample, dropout_rate=dropout_rate)
-        # transform encoder's last output to decoder hidden_dim 
-        self.state_transform = StateTransform(enc_hidden_dim * 2, dec_hidden_dim)
         # attention module
         self.attention = MultiHeadAttLoc(encoder_dim=enc_hidden_dim * 2, 
                 decoder_dim=dec_hidden_dim, att_dim=att_dim, 
                 conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
                 heads=heads, att_odim=att_odim)
         # decoder to generate words (or other units) 
-        self.decoder = Decoder(output_dim=output_dim, hidden_dim=dec_hidden_dim, 
+        self.decoder = Decoder(output_dim=output_dim, 
+                hidden_dim=dec_hidden_dim, embedding_dim=embedding_dim,
                 encoder_dim=enc_hidden_dim, attention=self.attention, 
-                dropout_rate=dropout_rate, att_odim=att_odim, 
+                dropout_rate=dropout_rate, att_odim=att_odim,  
                 bos=bos, eos=eos, pad=pad)
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200):
         enc_h, enc_lens = self.encoder(data, ilens)
-        dec_h, dec_c = self.state_transform(enc_h[:, -1])
-        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, (dec_h, dec_c), ys, 
+        log_probs, prediction, ws_list = self.decoder(enc_h, enc_lens, ys, 
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps)
         return log_probs, prediction, ws_list
 

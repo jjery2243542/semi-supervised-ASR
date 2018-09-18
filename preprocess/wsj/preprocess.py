@@ -22,7 +22,7 @@ def load_data(directory):
         data = json.load(f)
     return feature, data
 
-def load_dict(dict_path):
+def load_dict(dict_path, non_char_syms):
     vocab_dict = {'<PAD>':0, '<BOS>':1, '<EOS>':2}
     with open(dict_path) as f:
         for i, line in enumerate(f):
@@ -30,25 +30,16 @@ def load_dict(dict_path):
             if i == 0:
                 continue
             sym, ind = line.strip().split(maxsplit=1)
-            # 2 for <BLANK>, <UNK>, 3 for <PAD>, <BOS>, <EOS>
-            new_ind = int(ind) - 2 + 3
-            vocab_dict[sym] = new_ind
+            # only add characters and some syms 
+            if sym in non_char_syms or sym.isalpha():
+                vocab_dict[sym] = len(vocab_dict)
     return vocab_dict
 
-def load_non_lang_sym(path):
-    syms = []
-    with open(path) as f:
-        for line in f:
-            sym = line.strip()
-            syms.append(sym)
-    return syms
-
-def get_token_ids(data_dict):
+def get_token_ids(data_dict, vocab_dict):
     data = {}
     for utt_id in data_dict['utts']:
-        ori_token_ids = data_dict['utts'][utt_id]['output'][0]['tokenid'].split()
-        # 2 for <BLANK>, <UNK>, 3 for <PAD>, <BOS>, <EOS>
-        token_ids = [int(token_id) - 2 + 3 for token_id in ori_token_ids]
+        tokens = data_dict['utts'][utt_id]['output'][0]['token'].split()
+        token_ids = [vocab_dict[token] for token in tokens if token in vocab_dict]
         data[utt_id] = token_ids
     return data
 
@@ -67,28 +58,28 @@ def merge_data(feature, token_ids):
 #    return sents
 
 if __name__ == '__main__':
-    if len(sys.argv) < 6:
+    if len(sys.argv) < 5:
         print('usage: python3 preprocess.py [root_dir] [dsets (ex. train_si84,train_si284...)] [dict_path] '
-                '[non language symbol path] [output_dir]')
+                '[output_dir]')
 
     root_dir = sys.argv[1]
     dsets = sys.argv[2].strip().split(',')
     dict_path = sys.argv[3]
-    non_lan_sym_path = sys.argv[4]
-    output_dir = sys.argv[5]
+    output_dir = sys.argv[4]
 
+    non_char_syms = ['\'', '.', '-', '<space>', '<NOISE>']
     # dump dict
-    vocab_dict = load_dict(dict_path)
+    vocab_dict = load_dict(dict_path, non_char_syms)
     dict_output_path = os.path.join(output_dir, 'vocab_dict.pkl')
     with open(dict_output_path, 'wb') as f:
         pickle.dump(vocab_dict, f)
 
     # load non-lang sym
-    non_lang_syms = load_non_lang_sym(non_lan_sym_path)
+    non_lang_syms = ['<NOISE>', '<PAD>', '<BOS>', '<EOS>']
     non_lang_syms_output_path = os.path.join(output_dir, 'non_lang_syms.pkl')
     with open(non_lang_syms_output_path, 'wb') as f:
         pickle.dump(non_lang_syms, f)
-
+    exit(0)
     # process data
     in_dir = 'deltafalse'
     for i, dset in enumerate(dsets):
@@ -96,7 +87,7 @@ if __name__ == '__main__':
         directory = os.path.join(root_dir, f'{dset}/{in_dir}')
         print('load data...')
         feature, data_dict = load_data(directory)
-        token_ids = get_token_ids(data_dict)
+        token_ids = get_token_ids(data_dict, vocab_dict)
         data = merge_data(feature, token_ids)
         print(f'total utterance={len(data)}')
         print('dump data...')
