@@ -52,29 +52,34 @@ class VGG2L(torch.nn.Module):
 class pBLSTM(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate):
         super(pBLSTM, self).__init__()
-        layers, dropout_layers = [], []
+        layers, project_layers = [], []
         for i in range(n_layers):
-            idim = input_dim if i == 0 else hidden_dim * 2
-            layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1, bidirectional=True, batch_first=True))
-            dropout_layers.append(torch.nn.Dropout(p=dropout_rate, inplace=True))
+            idim = input_dim if i == 0 else hidden_dim
+            layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1,
+                bidirectional=True, batch_first=True))
+            project_layers.append(torch.nn.Linear(2 * hidden_dim, hidden_dim))
+            #dropout_layers.append(torch.nn.Dropout(p=dropout_rate, inplace=True))
         self.layers = torch.nn.ModuleList(layers)
-        self.dropout_layers = torch.nn.ModuleList(dropout_layers)
+        self.project_layers = torch.nn.ModuleList(project_layers)
+        #self.dropout_layers = torch.nn.ModuleList(dropout_layers)
         self.subsample = subsample
 
     def forward(self, xpad, ilens):
-        for i, (layer, dropout_layer) in enumerate(zip(self.layers, self.dropout_layers)):
+        for i, (layer, project_layer) in enumerate(zip(self.layers, self.project_layers)):
             # pack sequence 
-            xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
-            xs, (_, _) = layer(xpack)
-            xpad, ilens = pad_packed_sequence(xs, batch_first=True)
+            xs_pack = pack_padded_sequence(xpad, ilens, batch_first=True)
+            xs, (_, _) = layer(xs_pack)
+            ys_pad, ilens = pad_packed_sequence(xs, batch_first=True)
             #xpad = dropout_layer(xpad)
-            dropout_layer(xpad)
             ilens = ilens.numpy()
             # subsampling
             sub = self.subsample[i]
             if sub > 1:
-                xpad = xpad[:, ::sub]
+                ys_pad = ys_pad[:, ::sub]
                 ilens = [(length + 1) // sub for length in ilens]
+            projected = project_layer(ys_pad)
+            xpad = torch.tanh(projected)
+            #dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
         return xpad, ilens
@@ -82,14 +87,14 @@ class pBLSTM(torch.nn.Module):
 class Encoder(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate, in_channel=1):
         super(Encoder, self).__init__()
-        self.enc1 = VGG2L(in_channel)
-        out_channel = _get_vgg2l_odim(input_dim) 
-        self.enc2 = pBLSTM(input_dim=out_channel, hidden_dim=hidden_dim, 
+        #self.enc1 = VGG2L(in_channel)
+        #out_channel = _get_vgg2l_odim(input_dim) 
+        self.enc2 = pBLSTM(input_dim=input_dim, hidden_dim=hidden_dim, 
                 n_layers=n_layers, subsample=subsample, dropout_rate=dropout_rate)
 
     def forward(self, x, ilens):
-        out, ilens = self.enc1(x, ilens)
-        out, ilens = self.enc2(out, ilens)
+        #out, ilens = self.enc1(x, ilens)
+        out, ilens = self.enc2(x, ilens)
         return out, ilens
 
 class MultiHeadAttLoc(torch.nn.Module):
@@ -128,7 +133,7 @@ class MultiHeadAttLoc(torch.nn.Module):
             self.pre_compute_enc_h = [self.mlp_enc[h](self.enc_h) for h in range(self.heads)]
 
         if dec_z is None:
-            dec_z = enc_h.data.new(batch_size, self.decoder_dim).zero_()
+            dec_z = enc_pad.new_zeros(batch_size, self.decoder_dim)
         else:
             dec_z = dec_z.view(batch_size, self.decoder_dim)
 
@@ -137,6 +142,7 @@ class MultiHeadAttLoc(torch.nn.Module):
             att_prev = []
             for h in range(self.heads):
                 att_prev += [pad_list([self.enc_h.new(l).fill_(1.0 / l) for l in enc_len], 0)]
+
         cs, ws = [], []
         for h in range(self.heads):
             #att_prev: batch_size x frame
@@ -154,9 +160,9 @@ class MultiHeadAttLoc(torch.nn.Module):
             w = F.softmax(scaling * e, dim=1)
             ws.append(w)
             # w_expanded: batch_size x 1 x frame
-            w_expanded = w.unsqueeze(2)
-            c = torch.sum(self.enc_h * w_expanded, dim=1)
-            #c = torch.bmm(w_expanded, self.enc_h).squeeze(1)
+            w_expanded = w.unsqueeze(1)
+            #c = torch.sum(self.enc_h * w_expanded, dim=1)
+            c = torch.bmm(w_expanded, self.enc_h).squeeze(1)
             cs.append(c)
         c = self.mlp_o(torch.cat(cs, dim=1))
         return c, ws 
@@ -179,17 +185,21 @@ class Decoder(torch.nn.Module):
         self.bos, self.eos, self.pad = bos, eos, pad
         # 3 is bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-        self.LSTMCell = torch.nn.LSTMCell(att_odim + embedding_dim, hidden_dim)
+        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
         # 3 is bos, eos, pad
-        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
+        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
         self.attention = attention
 
         self.hidden_dim = hidden_dim
+        self.att_odim = att_odim
 
-    def zero_state(self, enc_pad):
-        return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
+    def zero_state(self, enc_pad, dim=None):
+        if not dim:
+            return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
+        else:
+            return enc_pad.new_zeros(enc_pad.size(0), dim)
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=0.8, max_dec_timesteps=500):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -207,6 +217,8 @@ class Decoder(torch.nn.Module):
         # initialization
         dec_c = self.zero_state(enc_pad)
         dec_z = self.zero_state(enc_pad)
+        c = self.zero_state(enc_pad, dim=self.att_odim)
+
         ws = None
         logits, prediction, ws_list = [], [], []
         # reset the attention module
@@ -215,9 +227,6 @@ class Decoder(torch.nn.Module):
         # loop for each timestep
         olength = max_dec_timesteps if not ys else olength
         for t in range(olength):
-            # run attention module
-            c, ws = self.attention(enc_pad, enc_len, dec_z, ws)
-            ws_list.append(ws)
             # supervised learning: using teacher forcing
             if ys is not None:
                 # teacher forcing
@@ -230,9 +239,15 @@ class Decoder(torch.nn.Module):
                     emb = self.embedding(bos)
                 else:
                     emb = self.embedding(prediction[-1])
+
             cell_inp = torch.cat([emb, c], dim=-1)
             dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-            logit = self.output_layer(dec_z)
+
+            # run attention module
+            c, ws = self.attention(enc_pad, enc_len, dec_z, ws)
+            ws_list.append(ws)
+            output = torch.cat([dec_z, c], dim=-1)
+            logit = self.output_layer(output)
             logits.append(logit)
             prediction.append(torch.argmax(logit, dim=-1))
 
@@ -255,7 +270,7 @@ class E2E(torch.nn.Module):
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
                 n_layers=enc_n_layers, subsample=subsample, dropout_rate=dropout_rate)
         # attention module
-        self.attention = MultiHeadAttLoc(encoder_dim=enc_hidden_dim * 2, 
+        self.attention = MultiHeadAttLoc(encoder_dim=enc_hidden_dim, 
                 decoder_dim=dec_hidden_dim, att_dim=att_dim, 
                 conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
                 heads=heads, att_odim=att_odim)
@@ -304,5 +319,4 @@ if __name__ == '__main__':
     log_probs, prediction, ws_list = model(data, ilens, ys)
     p_lens = [p.size() for p in prediction]
     t_lens = [t.size() for t in ys]
-    print(p_lens, t_lens)
 
