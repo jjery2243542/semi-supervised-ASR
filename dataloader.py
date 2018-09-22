@@ -14,7 +14,6 @@ def _collate_fn(l):
 def get_data_loader(dataset, batch_size, shuffle):
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, num_workers=0)
 
-
 #class PartLoaderIter:
 #    def __init__(self, loader):
 #        assert len(loader) > 0

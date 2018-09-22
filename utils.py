@@ -20,7 +20,7 @@ def plot_alignment(alignment, gs, idx, mode):
 def pad_list(xs, pad_value=0):
     batch_size = len(xs)
     max_length = max(x.size(0) for x in xs)
-    pad = xs[0].data.new(batch_size, max_length, *xs[0].size()[1:]).zero_() + pad_value
+    pad = xs[0].data.new(batch_size, max_length, *xs[0].size()[1:]).fill_(pad_value)
     for i in range(batch_size):
         pad[i, :xs[i].size(0)] = xs[i]
     return pad
@@ -49,7 +49,10 @@ def remove_pad_eos(sequences, eos=2):
 def ind2character(sequences, non_lang_syms, vocab):
     inv_vocab = {v: k for k, v in vocab.items()}
     non_lang_syms_ind = [vocab[sym] for sym in non_lang_syms]
-    char_seqs = [[inv_vocab[ind] for ind in sequence if ind not in non_lang_syms_ind] for sequence in sequences]
+    char_seqs = []
+    for sequence in sequences:
+        char_seq = [inv_vocab[ind] for ind in sequence if ind not in non_lang_syms_ind]
+        char_seqs.append(char_seq)
     return char_seqs
 
 def calculate_cer(hyps, refs):
