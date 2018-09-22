@@ -66,7 +66,7 @@ class Solver(object):
         # get dev dataset
         dev_set = self.config['dev_set']
         # do not sort dev set
-        dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), config=self.config, sort=True)
+        dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), sort=True)
         self.dev_loader = get_data_loader(dev_dataset, batch_size=self.config['batch_size'] // 2, shuffle=False)
         return
 
@@ -83,11 +83,11 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
-            heads=self.config['heads'],
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
             ))
+        print(self.model)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], amsgrad=True)
         return
 
@@ -95,18 +95,17 @@ class Solver(object):
         # add 1 to EOS
         seq_len = [y.size(0) + 1 for y in ys]
         mask = cc(_seq_mask(seq_len=seq_len, max_len=log_prob.size(1)))
-        # divide by positive value
-        loss = -torch.sum(log_prob * mask) / torch.sum(mask)
+        # divide by total length
+        loss = -torch.sum(log_prob * mask) / sum(seq_len)
         return loss
 
     def sup_train_one_epoch(self, epoch):
         total_steps = len(self.train_lab_loader)
         total_loss = 0.
         for train_steps, data in enumerate(self.train_lab_loader):
-            xs, ilens, ys = data
-            # transfer to cuda 
-            xs = cc(xs)
-            ys = [cc(y) for y in ys]
+
+            xs, ilens, ys = self.to_gpu(data)
+
             # input the model
             log_probs, prediction, _ = self.model(xs, ilens, ys)
 
@@ -117,6 +116,7 @@ class Solver(object):
             # calculate gradients 
             self.opt.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_norm'])
             self.opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
@@ -126,40 +126,62 @@ class Solver(object):
                         step=epoch * total_steps + train_steps + 1)
         return total_loss / total_steps
 
+    def to_gpu(self, data):
+        xs, ilens, ys = data
+        xs = cc(xs)
+        ys = [cc(y) for y in ys]
+        return xs, ilens, ys
+
     def validation(self):
+        def to_sents(ind_seq):
+            char_list = ind2character(ind_seq, self.non_lang_syms, self.vocab) 
+            sents = char_list_to_str(char_list)
+            return sents
+
         self.model.eval()
         all_prediction, all_ys = [], []
         total_loss = 0.
         for step, data in enumerate(self.dev_loader):
-            xs, ilens, ys = data
-            xs = cc(xs)
-            ys = [cc(y) for y in ys]
-            # max length in ys
-            max_dec_timesteps = max([y.size(0) for y in ys])
+
+            xs, ilens, ys = self.to_gpu(data)
+
             # calculate loss
-            log_probs, _ , _ = self.model(xs, ilens, ys=ys, max_dec_timesteps=max_dec_timesteps)
+            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
             loss = self.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
+
+            # max length in ys
+            max_dec_timesteps = max([y.size(0) for y in ys])
+
             # feed previous
             _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps)
+
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
+
         self.model.train()
         # calculate loss
         avg_loss = total_loss / len(self.dev_loader)
+
         # remove eos and pad
         prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
+
         # indexes to characters
-        prediction_char = ind2character(prediction_til_eos, self.non_lang_syms, self.vocab) 
-        ground_truth_char = ind2character(all_ys, self.non_lang_syms, self.vocab)
-        prediction_sents = char_list_to_str(prediction_char) 
-        ground_truth_sents = char_list_to_str(ground_truth_char)
+        prediction_sents = to_sents(prediction_til_eos)
+        ground_truth_sents = to_sents(all_ys)
+
+        # calculate cer
         cer = calculate_cer(prediction_sents, ground_truth_sents)
+
         return avg_loss, cer, prediction_sents, ground_truth_sents
 
     def sup_train(self):
         best_valid_loss = 100
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
+                milestones=[self.config['change_learning_rate_epoch']],
+                gamma=self.config['lr_gamma'])
         for epoch in range(self.config['epochs']):
+            scheduler.step()
             avg_train_loss = self.sup_train_one_epoch(epoch)
             # validation
             avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
@@ -168,12 +190,14 @@ class Solver(object):
             # add to tensorboard
             self.logger.scalar_summary('cer', cer, epoch)
             # only add first 3 samples
-            lead_n = 3
+            lead_n = 5
+            print('-----------------')
             for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
                 self.logger.text_summary(f'prediction-{i}', p, epoch)
                 self.logger.text_summary(f'ground_truth-{i}', gt, epoch)
                 print(f'hyp-{i+1}: {p}')
                 print(f'ref-{i+1}: {gt}')
+            print('-----------------')
             # save model 
             model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
             if avg_valid_loss < best_valid_loss: 
@@ -184,4 +208,4 @@ if __name__ == '__main__':
     with open('config.yaml', 'r') as f:
         config = yaml.load(f)
     solver = Solver(config)
-    solver.sup_train()
+    #solver.sup_train()
