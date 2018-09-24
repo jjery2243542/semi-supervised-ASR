@@ -84,7 +84,7 @@ class pBLSTM(torch.nn.Module):
                 ys_pad = ys_pad.contiguous().view(ys_pad.size(0), ys_pad.size(1) // 2, ys_pad.size(2) * 2)
                 ilens = [(length + 1) // sub for length in ilens]
             projected = project_layer(ys_pad)
-            xpad = torch.tanh(projected)
+            xpad = F.relu(projected)
             xpad = F.dropout(xpad, self.dropout_rate, training=self.training)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
@@ -245,7 +245,7 @@ class MultiHeadAttLoc(torch.nn.Module):
 
 class Decoder(torch.nn.Module):
     def __init__(self, output_dim, embedding_dim, hidden_dim, encoder_dim, 
-            attention, att_odim, dropout_rate, bos, eos, pad):
+            attention, att_odim, dropout_rate, bos, eos, pad, ls_weight, labeldist):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
         # 3 is bos, eos, pad
@@ -258,6 +258,11 @@ class Decoder(torch.nn.Module):
         self.hidden_dim = hidden_dim
         self.att_odim = att_odim
         self.dropout_rate = dropout_rate
+
+        # label smoothing hyperparameters
+        self.ls_weight = ls_weight
+        self.labeldist = labeldist
+        self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
 
     def zero_state(self, enc_pad, dim=None):
         if not dim:
@@ -327,12 +332,18 @@ class Decoder(torch.nn.Module):
             ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
         else:
             ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze(2)
+
+        # label smoothing
+        if self.ls_weight > 0:
+            loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
         return ys_log_probs, prediction, w_list
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
-            embedding_dim, output_dim, pad=0, bos=1, eos=2):
+            embedding_dim, output_dim, ls_weight, labeldist, 
+            pad=0, bos=1, eos=2):
         super(E2E, self).__init__()
         # encoder to encode acoustic features
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
@@ -346,7 +357,8 @@ class E2E(torch.nn.Module):
         self.decoder = Decoder(output_dim=output_dim, 
                 hidden_dim=dec_hidden_dim, embedding_dim=embedding_dim,
                 encoder_dim=enc_hidden_dim, attention=self.attention, 
-                dropout_rate=dropout_rate, att_odim=att_odim,  
+                dropout_rate=dropout_rate, att_odim=att_odim, 
+                ls_weight=ls_weight, labeldist=labeldist, 
                 bos=bos, eos=eos, pad=pad)
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200):

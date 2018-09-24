@@ -1,10 +1,10 @@
 logdir: ./log/
 tag: supervised
 model_dir: /workspace/model/e2e_asr/
-model_name: e2e_one_att_drop_sche_noshuf_cat_long.pkl
-dataset_root_dir: /workspace/data/wsj/processed/
-vocab_path: /workspace/data/wsj/processed/vocab_dict.pkl
-non_lang_syms_path: /workspace/data/wsj/processed/non_lang_syms.pkl
+model_name: e2e_one_att_drop_sche_noshuf_cat_long_dec320_ls0.1.pkl
+dataset_root_dir: /workspace/data/wsj/processed/deltafalse/
+vocab_path: /workspace/data/wsj/processed/deltafalse/vocab_dict.pkl
+non_lang_syms_path: /workspace/data/wsj/processed/deltafalse/non_lang_syms.pkl
 max_kept: 20
 summary_steps: 100
 labeled_set: train_si84
@@ -22,8 +22,8 @@ enc_hidden_dim: 320
 enc_n_layers: 3
 subsample: [2, 2, 2]
 dropout_rate: 0.3
-max_norm: 2
-dec_hidden_dim: 512
+max_grad_norm: 5
+dec_hidden_dim: 320
 embedding_dim: 128
 att_dim: 320
 conv_channels: 10
@@ -31,7 +31,14 @@ conv_kernel_size: 100
 att_odim: 320
 heads: 1
 init_tf_rate: 1.0
+tf_rate_lowerbound: 1.0
+tf_decay_epochs: 100
+ls_weight: 0.1
+weight_decay: 0.000001
+gaussian_std: 0.075
+add_gaussian: True
+gaussian_epoch: 50
 learning_rate: 0.0005
-lr_gamma: 0.0001
+lr_gamma: 0.2
 epochs: 300
-change_learning_rate_epoch: 50
+change_learning_rate_epoch: 100

@@ -11,7 +11,7 @@ import pickle
 class Solver(object):
     def __init__(self, config):
         self.config = config
-
+        print(self.config)
         # store model 
         self.model_kept = []
         self.max_kept = config['max_kept']
@@ -24,6 +24,9 @@ class Solver(object):
 
         # get data loader 
         self.get_data_loaders()
+
+        # get label distribution
+        self.get_label_dist(self.train_lab_dataset)
 
         # build model and optimizer
         self.build_model()
@@ -45,29 +48,44 @@ class Solver(object):
 
     def load_model(self, model_path):
         self.model.load_state_dict(torch.load(model_path))
-        return 
+        return
 
+    def get_label_dist(self, dataset):
+        labelcount = np.zeros(len(self.vocab))
+        for _, y in dataset:
+            for ind in y:
+                labelcount[ind] += 1.
+        labelcount[self.vocab['<EOS>']] += len(dataset)
+        labelcount[self.vocab['<PAD>']] = 0
+        labelcount[self.vocab['<BOS>']] = 0
+        self.labeldist = labelcount / np.sum(labelcount)
+        return
+             
     def get_data_loaders(self):
         root_dir = self.config['dataset_root_dir']
         # get labeled dataset
         labeled_set = self.config['labeled_set']
-        train_lab_dataset = PickleDataset(os.path.join(root_dir, f'{labeled_set}.pkl'), 
+        self.train_lab_dataset = PickleDataset(os.path.join(root_dir, f'{labeled_set}.pkl'), 
             config=self.config, sort=True)
-        self.train_lab_loader = get_data_loader(train_lab_dataset, batch_size=self.config['batch_size'], 
+        self.train_lab_loader = get_data_loader(self.train_lab_dataset, 
+                batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'])
 
         # get unlabeled dataset
         unlabeled_set = self.config['unlabeled_set']
-        train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
+        self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
             config=self.config, sort=True)
-        self.train_unlab_loader = get_data_loader(train_unlab_dataset, batch_size=self.config['batch_size'], 
+        self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
+                batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'])
 
         # get dev dataset
         dev_set = self.config['dev_set']
         # do not sort dev set
-        dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), sort=True)
-        self.dev_loader = get_data_loader(dev_dataset, batch_size=self.config['batch_size'] // 2, shuffle=False)
+        self.dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), sort=True)
+        self.dev_loader = get_data_loader(self.dev_dataset, 
+                batch_size=self.config['batch_size'] // 2, 
+                shuffle=False)
         return
 
     def build_model(self):
@@ -83,12 +101,15 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
+            ls_weight=self.config['ls_weight'],
+            labeldist=self.labeldist,
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
             ))
         print(self.model)
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], amsgrad=True)
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+                weight_decay=self.config['weight_decay'])
         return
 
     def mask_and_cal_loss(self, log_prob, ys):
@@ -99,15 +120,19 @@ class Solver(object):
         loss = -torch.sum(log_prob * mask) / sum(seq_len)
         return loss
 
-    def sup_train_one_epoch(self, epoch):
+    def sup_train_one_epoch(self, epoch, tf_rate):
         total_steps = len(self.train_lab_loader)
         total_loss = 0.
         for train_steps, data in enumerate(self.train_lab_loader):
-
             xs, ilens, ys = self.to_gpu(data)
 
+            if self.config['add_gaussian'] and epoch >= self.config['gaussian_epoch']:
+                gau = np.random.normal(0, self.config['gaussian_std'], (xs.size(0), xs.size(1), xs.size(2)))
+                gau = cc(torch.from_numpy(np.array(gau, dtype=np.float32)))
+                xs = xs + gau
+
             # input the model
-            log_probs, prediction, _ = self.model(xs, ilens, ys)
+            log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate)
 
             # mask and calculate loss
             loss = self.mask_and_cal_loss(log_probs, ys)
@@ -116,7 +141,7 @@ class Solver(object):
             # calculate gradients 
             self.opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_norm'])
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
             self.opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
@@ -154,7 +179,7 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps)
+            _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps + 15)
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
@@ -177,15 +202,27 @@ class Solver(object):
 
     def sup_train(self):
         best_valid_loss = 100
+
         scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
                 gamma=self.config['lr_gamma'])
+
+        # tf_rate
+        init_tf_rate = self.config['init_tf_rate']
+        tf_decay_epochs = self.config['tf_decay_epochs']
+        tf_rate_lowerbound = self.config['tf_rate_lowerbound']
+
         for epoch in range(self.config['epochs']):
+            # lr scheduler
             scheduler.step()
-            avg_train_loss = self.sup_train_one_epoch(epoch)
+
+            # calculate tf rate
+            tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
+            # train one epoch
+            avg_train_loss = self.sup_train_one_epoch(epoch, tf_rate)
             # validation
             avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
-            print(f'epoch: {epoch}, train_loss={avg_train_loss:.4f}, '
+            print(f'epoch: {epoch}, tf_rate={tf_rate:.3f}, train_loss={avg_train_loss:.4f}, '
                     f'valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
             # add to tensorboard
             self.logger.scalar_summary('cer', cer, epoch)
