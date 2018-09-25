@@ -263,7 +263,7 @@ class Decoder(torch.nn.Module):
         # label smoothing hyperparameters
         self.ls_weight = ls_weight
         self.labeldist = labeldist
-        if labeldist:
+        if labeldist is not None:
             self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
 
     def zero_state(self, enc_pad, dim=None):

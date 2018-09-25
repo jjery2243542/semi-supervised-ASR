@@ -19,7 +19,13 @@ if __name__ == '__main__':
     mode = 'train' if args.train else 'test'
     solver = Solver(config, mode=mode)
 
+    if config['load_model']:
+        solver.load_model(config['load_model_path'])
+
     if args.train:
         state_dict, cer = solver.sup_train()
-    if args.test:
+
+    if args.test and args.train:
+        solver.test(state_dict=state_dict)
+    elif args.test:
         solver.test()
