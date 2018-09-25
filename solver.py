@@ -3,7 +3,7 @@ import numpy as np
 from model import E2E
 from dataloader import get_data_loader
 from dataset import PickleDataset
-from utils import cc, _seq_mask, remove_pad_eos, ind2character, calculate_cer, char_list_to_str, Logger
+from utils import cc, _seq_mask, remove_pad_eos, ind2character, calculate_cer, char_list_to_str, to_sents, Logger
 import yaml
 import os
 import pickle
@@ -12,9 +12,11 @@ class Solver(object):
     def __init__(self, config):
         self.config = config
         print(self.config)
+
         # store model 
         self.model_kept = []
-        self.max_kept = config['max_kept']
+
+        #self.max_kept = config['max_kept']
 
         # logger
         self.logger = Logger(config['logdir'])
@@ -121,11 +123,15 @@ class Solver(object):
         return loss
 
     def sup_train_one_epoch(self, epoch, tf_rate):
+
         total_steps = len(self.train_lab_loader)
         total_loss = 0.
+
         for train_steps, data in enumerate(self.train_lab_loader):
+
             xs, ilens, ys = self.to_gpu(data)
 
+            # add gaussian noise after gaussian_epoch
             if self.config['add_gaussian'] and epoch >= self.config['gaussian_epoch']:
                 gau = np.random.normal(0, self.config['gaussian_std'], (xs.size(0), xs.size(1), xs.size(2)))
                 gau = cc(torch.from_numpy(np.array(gau, dtype=np.float32)))
@@ -143,12 +149,15 @@ class Solver(object):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
             self.opt.step()
+
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             if (train_steps + 1) % self.config['summary_steps'] == 0:
                 # add to logger
-                self.logger.scalar_summary(tag=self.config['tag'], value=loss.item(), 
+                tag = self.config['tag']
+                self.logger.scalar_summary(tag=f'{tag}/train_loss', value=loss.item(), 
                         step=epoch * total_steps + train_steps + 1)
+
         return total_loss / total_steps
 
     def to_gpu(self, data):
@@ -157,11 +166,58 @@ class Solver(object):
         ys = [cc(y) for y in ys]
         return xs, ilens, ys
 
+    def ind2sent(self, all_prediction, all_ys):
+        # remove eos and pad
+        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
+
+        # indexes to characters
+        prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
+        ground_truth_sents = to_sents(all_ys, self.vocab, self.non_lang_syms)
+
+        # calculate cer
+        cer = calculate_cer(prediction_sents, ground_truth_sents)
+        return cer, prediction_sents, ground_truth_sents
+
+    def test(self):
+
+        # load model
+        self.load_model(self.config['load_model_path'])
+
+        # get test dataset
+        root_dir = self.config['dataset_root_dir']
+        test_set = self.config['test_set']
+
+        test_dataset = PickleDataset(os.path.join(root_dir, f'{test_set}.pkl'), 
+            config=None, sort=True)
+
+        test_loader = get_data_loader(test_dataset, 
+                batch_size=self.config['batch_size'] // 2, 
+                shuffle=False)
+
+        self.model.eval()
+        all_prediction, all_ys = [], []
+
+        for step, data in enumerate(test_loader):
+
+            xs, ilens, ys = self.to_gpu(data)
+
+            # max length in ys
+            max_dec_timesteps = max([y.size(0) for y in ys])
+
+            # feed previous
+            _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps + 30)
+
+            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
+            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
+
+        self.model.train()
+
+        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
+        print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer}')
+
+        return cer
+
     def validation(self):
-        def to_sents(ind_seq):
-            char_list = ind2character(ind_seq, self.non_lang_syms, self.vocab) 
-            sents = char_list_to_str(char_list)
-            return sents
 
         self.model.eval()
         all_prediction, all_ys = [], []
@@ -188,20 +244,13 @@ class Solver(object):
         # calculate loss
         avg_loss = total_loss / len(self.dev_loader)
 
-        # remove eos and pad
-        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
-
-        # indexes to characters
-        prediction_sents = to_sents(prediction_til_eos)
-        ground_truth_sents = to_sents(all_ys)
-
-        # calculate cer
-        cer = calculate_cer(prediction_sents, ground_truth_sents)
+        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
 
         return avg_loss, cer, prediction_sents, ground_truth_sents
 
     def sup_train(self):
-        best_valid_loss = 100
+
+        best_cer = 2
 
         scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
@@ -213,20 +262,28 @@ class Solver(object):
         tf_rate_lowerbound = self.config['tf_rate_lowerbound']
 
         for epoch in range(self.config['epochs']):
+
             # lr scheduler
             scheduler.step()
 
             # calculate tf rate
             tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
+
             # train one epoch
             avg_train_loss = self.sup_train_one_epoch(epoch, tf_rate)
+
             # validation
             avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
-            print(f'epoch: {epoch}, tf_rate={tf_rate:.3f}, train_loss={avg_train_loss:.4f}, '
+
+            print(f'Epoch: {epoch}, tf_rate={tf_rate:.3f}, train_loss={avg_train_loss:.4f}, '
                     f'valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
+
             # add to tensorboard
-            self.logger.scalar_summary('cer', cer, epoch)
-            # only add first 3 samples
+            tag = self.config['tag']
+            self.logger.scalar_summary(f'{tag}/cer', cer, epoch)
+            self.logger.scalar_summary(f'{tag}/val_loss', avg_valid_loss, epoch)
+
+            # only add first n samples
             lead_n = 5
             print('-----------------')
             for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
@@ -235,11 +292,15 @@ class Solver(object):
                 print(f'hyp-{i+1}: {p}')
                 print(f'ref-{i+1}: {gt}')
             print('-----------------')
-            # save model 
-            model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
-            if avg_valid_loss < best_valid_loss: 
-                best_valid_loss = avg_valid_loss
+
+            if cer < best_cer: 
+                # save model 
+                model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                best_cer = cer
                 self.save_model(model_path)
+                print(f'Save #{epoch} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
+                print('-----------------')
+
 
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:

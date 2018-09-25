@@ -9,6 +9,11 @@ def cc(net):
     else:
         return net
 
+def to_sents(ind_seq, vocab, non_lang_syms):
+    char_list = ind2character(ind_seq, non_lang_syms, vocab) 
+    sents = char_list_to_str(char_list)
+    return sents
+
 def plot_alignment(alignment, gs, idx, mode):
     fig, ax = plt.subplots()
     im = ax.imshow(alignment)

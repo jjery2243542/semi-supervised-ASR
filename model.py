@@ -94,7 +94,8 @@ class Encoder(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate, in_channel=1):
         super(Encoder, self).__init__()
         #self.enc1 = VGG2L(in_channel)
-        #out_channel = _get_vgg2l_odim(input_dim) 
+        #out_channel = _get_vgg2l_odim(input_dim)
+
         self.enc2 = pBLSTM(input_dim=input_dim, hidden_dim=hidden_dim, 
                 n_layers=n_layers, subsample=subsample, dropout_rate=dropout_rate)
 
@@ -337,6 +338,7 @@ class Decoder(torch.nn.Module):
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
+
         return ys_log_probs, prediction, w_list
 
 class E2E(torch.nn.Module):
@@ -344,15 +346,19 @@ class E2E(torch.nn.Module):
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
             embedding_dim, output_dim, ls_weight, labeldist, 
             pad=0, bos=1, eos=2):
+
         super(E2E, self).__init__()
+
         # encoder to encode acoustic features
         self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim, 
                 n_layers=enc_n_layers, subsample=subsample, dropout_rate=dropout_rate)
+
         # attention module
         self.attention = AttLoc(encoder_dim=enc_hidden_dim, 
                 decoder_dim=dec_hidden_dim, att_dim=att_dim, 
                 conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
                 att_odim=att_odim)
+
         # decoder to generate words (or other units) 
         self.decoder = Decoder(output_dim=output_dim, 
                 hidden_dim=dec_hidden_dim, embedding_dim=embedding_dim,
