@@ -246,7 +246,7 @@ class MultiHeadAttLoc(torch.nn.Module):
 
 class Decoder(torch.nn.Module):
     def __init__(self, output_dim, embedding_dim, hidden_dim, encoder_dim, 
-            attention, att_odim, dropout_rate, bos, eos, pad, ls_weight, labeldist):
+            attention, att_odim, dropout_rate, bos, eos, pad, ls_weight=0, labeldist=None):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
         # 3 is bos, eos, pad
@@ -263,7 +263,8 @@ class Decoder(torch.nn.Module):
         # label smoothing hyperparameters
         self.ls_weight = ls_weight
         self.labeldist = labeldist
-        self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
+        if labeldist:
+            self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
 
     def zero_state(self, enc_pad, dim=None):
         if not dim:

@@ -10,9 +10,9 @@ class PickleDataset(Dataset):
             self.data_dict = pickle.load(f)
 
         # remove the utterance out of limit
-        self.keys = self.get_keys(config)
+        self.keys = self.get_keys(config, sort=sort)
 
-    def get_keys(self, config, sort=True):
+    def get_keys(self, config, sort):
         if config:
             max_feature_length = config['max_feature_length']
             min_feature_length = config['min_feature_length']

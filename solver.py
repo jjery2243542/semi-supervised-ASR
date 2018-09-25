@@ -9,14 +9,12 @@ import os
 import pickle
 
 class Solver(object):
-    def __init__(self, config):
+    def __init__(self, config, mode='train'):
+
         self.config = config
         print(self.config)
 
-        # store model 
-        self.model_kept = []
-
-        #self.max_kept = config['max_kept']
+        self.mode = mode
 
         # logger
         self.logger = Logger(config['logdir'])
@@ -24,11 +22,12 @@ class Solver(object):
         # load vocab and non lang syms
         self.load_vocab()
 
-        # get data loader 
-        self.get_data_loaders()
+        if mode == 'train':
+            # get data loader 
+            self.get_data_loaders()
 
-        # get label distribution
-        self.get_label_dist(self.train_lab_dataset)
+            # get label distribution
+            self.get_label_dist(self.train_lab_dataset)
 
         # build model and optimizer
         self.build_model()
@@ -91,6 +90,10 @@ class Solver(object):
         return
 
     def build_model(self):
+
+        labeldist = None if self.mode == 'test' else self.labeldist
+        ls_weight = 0 if self.mode == 'test' else self.config['ls_weight']
+
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
             enc_n_layers=self.config['enc_n_layers'],
@@ -103,8 +106,8 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
-            ls_weight=self.config['ls_weight'],
-            labeldist=self.labeldist,
+            ls_weight=ls_weight,
+            labeldist=labeldist,
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
@@ -178,20 +181,23 @@ class Solver(object):
         cer = calculate_cer(prediction_sents, ground_truth_sents)
         return cer, prediction_sents, ground_truth_sents
 
-    def test(self):
+    def test(self, state_dict=None):
 
         # load model
-        self.load_model(self.config['load_model_path'])
+        if not state_dict:
+            self.load_model(self.config['load_model_path'])
+        else:
+            self.model.load_state_dict(state_dict)
 
         # get test dataset
         root_dir = self.config['dataset_root_dir']
         test_set = self.config['test_set']
 
         test_dataset = PickleDataset(os.path.join(root_dir, f'{test_set}.pkl'), 
-            config=None, sort=True)
+            config=None, sort=False)
 
         test_loader = get_data_loader(test_dataset, 
-                batch_size=self.config['batch_size'] // 2, 
+                batch_size=1, 
                 shuffle=False)
 
         self.model.eval()
@@ -213,6 +219,11 @@ class Solver(object):
         self.model.train()
 
         cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
+
+        with open(f'{test_set}.txt', 'w') as f:
+            for p in prediction_sents:
+                f.write(f'{p}\n')
+
         print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer}')
 
         return cer
@@ -251,7 +262,9 @@ class Solver(object):
     def sup_train(self):
 
         best_cer = 2
+        best_model = None
 
+        # lr scheduler
         scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
                 gamma=self.config['lr_gamma'])
@@ -263,7 +276,6 @@ class Solver(object):
 
         for epoch in range(self.config['epochs']):
 
-            # lr scheduler
             scheduler.step()
 
             # calculate tf rate
@@ -298,9 +310,10 @@ class Solver(object):
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                 best_cer = cer
                 self.save_model(model_path)
+                best_model = self.model.state_dict()
                 print(f'Save #{epoch} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                 print('-----------------')
-
+        return best_model, best_cer
 
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:

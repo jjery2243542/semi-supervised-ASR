@@ -8,16 +8,18 @@ if __name__ == '__main__':
     parser = ArgumentParser()
 
     parser.add_argument('-config', '-c', default='config.yaml')
-    parser.add_argument('-mode', '-m', default='train')
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--test', action='store_true')
 
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
         config = yaml.load(f)
 
-    solver = Solver(config)
+    mode = 'train' if args.train else 'test'
+    solver = Solver(config, mode=mode)
 
-    if args.mode == 'train':
-        solver.sup_train()
-    else:
+    if args.train:
+        state_dict, cer = solver.sup_train()
+    if args.test:
         solver.test()

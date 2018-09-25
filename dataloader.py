@@ -12,7 +12,7 @@ def _collate_fn(l):
     return padded_features, ilens, texts
 
 def get_data_loader(dataset, batch_size, shuffle):
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, num_workers=0)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, num_workers=4)
 
 #class PartLoaderIter:
 #    def __init__(self, loader):
