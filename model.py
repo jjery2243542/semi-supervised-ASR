@@ -272,6 +272,18 @@ class Decoder(torch.nn.Module):
         else:
             return enc_pad.new_zeros(enc_pad.size(0), dim)
 
+    def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
+        cell_inp = torch.cat([emb, c], dim=-1)
+        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
+        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+
+        # run attention module
+        c, w = self.attention(enc_pad, enc_len, dec_z, w)
+        output = torch.cat([dec_z, c], dim=-1)
+        output = F.dropout(output, self.dropout_rate)
+        logit = self.output_layer(output)
+        return logits, dec_z, dec_c, c, w
+
     def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500):
         batch_size = enc_pad.size(0)
         if ys is not None:
@@ -313,16 +325,10 @@ class Decoder(torch.nn.Module):
                 else:
                     emb = self.embedding(prediction[-1])
 
-            cell_inp = torch.cat([emb, c], dim=-1)
-            cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
-            dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+            logit, dec_z, dec_c, c, w = \
+                    self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
-            # run attention module
-            c, w = self.attention(enc_pad, enc_len, dec_z, w)
             w_list.append(w)
-            output = torch.cat([dec_z, c], dim=-1)
-            output = F.dropout(output, self.dropout_rate)
-            logit = self.output_layer(output)
             logits.append(logit)
             prediction.append(torch.argmax(logit, dim=-1))
 
@@ -341,6 +347,29 @@ class Decoder(torch.nn.Module):
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
 
         return ys_log_probs, prediction, w_list
+
+    def topk_decode(self, enc_pad, enc_len, k=5, max_dec_timesteps=300):
+        '''
+        can only decode one sample at a time.
+        enc_pad: [1, timesteps, hidden_size]
+        enc_len: int
+        '''
+
+        # initialization
+        dec_c = self.zero_state(enc_pad)
+        dec_z = self.zero_state(enc_pad)
+        c = self.zero_state(enc_pad, dim=self.att_odim)
+
+        w = None
+
+        prediction = []
+        # reset the attention module
+        self.attention.reset()
+
+        # loop for each timestep
+        for t in range(max_dec_timesteps):
+
+
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 

@@ -16,8 +16,7 @@ if __name__ == '__main__':
     with open(args.config, 'r') as f:
         config = yaml.load(f)
 
-    mode = 'train' if args.train else 'test'
-    solver = Solver(config, mode=mode)
+    solver = Solver(config)
 
     if config['load_model']:
         solver.load_model(config['load_model_path'])

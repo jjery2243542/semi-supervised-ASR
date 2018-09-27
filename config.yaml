@@ -3,6 +3,7 @@ tag: supervised
 model_dir: /workspace/model/e2e_asr/
 model_name: e2e_one_att_drop_sche_noshuf_cat_long_dec320_ls0.1.pkl
 load_model_path: e2e.pkl
+load_model: False
 dataset_root_dir: /workspace/data/wsj/processed/deltafalse/
 vocab_path: /workspace/data/wsj/processed/deltafalse/vocab_dict.pkl
 non_lang_syms_path: /workspace/data/wsj/processed/deltafalse/non_lang_syms.pkl

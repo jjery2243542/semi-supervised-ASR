@@ -9,25 +9,16 @@ import os
 import pickle
 
 class Solver(object):
-    def __init__(self, config, mode='train'):
+    def __init__(self, config):
 
         self.config = config
         print(self.config)
-
-        self.mode = mode
 
         # logger
         self.logger = Logger(config['logdir'])
 
         # load vocab and non lang syms
         self.load_vocab()
-
-        if mode == 'train':
-            # get data loader 
-            self.get_data_loaders()
-
-            # get label distribution
-            self.get_label_dist(self.train_lab_dataset)
 
         # build model and optimizer
         self.build_model()
@@ -61,6 +52,13 @@ class Solver(object):
         labelcount[self.vocab['<BOS>']] = 0
         self.labeldist = labelcount / np.sum(labelcount)
         return
+
+    def calculate_length_proportion(self, dataset):
+        x_len, y_len = 0, 0
+        for x, y in dataset:
+            x_len += x.shape[0]
+            y_len += len(y)
+        return y_len / x_len
              
     def get_data_loaders(self):
         root_dir = self.config['dataset_root_dir']
@@ -91,8 +89,8 @@ class Solver(object):
 
     def build_model(self):
 
-        labeldist = None if self.mode == 'test' else self.labeldist
-        ls_weight = 0 if self.mode == 'test' else self.config['ls_weight']
+        labeldist = None if not hasattr(self, 'labeldist') else self.labeldist
+        ls_weight = 0 if not hasattr(self, 'labeldist') else self.config['ls_weight']
 
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
@@ -112,7 +110,9 @@ class Solver(object):
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
             ))
+
         print(self.model)
+
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         return
@@ -261,6 +261,12 @@ class Solver(object):
 
     def sup_train(self):
 
+        # get data loader 
+        self.get_data_loaders()
+
+        # get label distribution
+        self.get_label_dist(self.train_lab_dataset)
+
         best_cer = 2
         best_model = None
 
@@ -279,7 +285,10 @@ class Solver(object):
             scheduler.step()
 
             # calculate tf rate
-            tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
+            if epoch <= tf_decay_epochs:
+                tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
+            else:
+                tf_rate = tf_rate_lowerbound
 
             # train one epoch
             avg_train_loss = self.sup_train_one_epoch(epoch, tf_rate)
