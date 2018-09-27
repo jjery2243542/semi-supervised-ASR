@@ -342,6 +342,23 @@ class Decoder(torch.nn.Module):
 
         return ys_log_probs, prediction, w_list
 
+    def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps=500):
+        batch_size = enc_pad.size(0)
+
+        # initialization
+        dec_c = self.zero_state(enc_pad)
+        dec_z = self.zero_state(enc_pad)
+        c = self.zero_state(enc_pad, dim=self.att_odim)
+
+        w = None
+        logits, prediction, w_list = [], [], []
+        # reset the attention module
+        self.attention.reset()
+
+        # loop for each timestep
+        olength = max_dec_timesteps if not ys else olength
+        #for t in range(olength):
+
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
