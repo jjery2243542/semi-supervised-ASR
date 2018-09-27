@@ -24,7 +24,8 @@ class Solver(object):
         self.build_model()
 
     def save_model(self, model_path):
-        torch.save(self.model.state_dict(), model_path)
+        torch.save(self.model.state_dict(), f'{model_path}.ckpt')
+        torch.save(self.opt.state_dict(), f'{model_path}.opt')
         #self.model_kept.append(model_path)
         #if len(self.model_kept) > self.max_kept:
         #    os.remove(self.model_kept[0])
@@ -39,7 +40,8 @@ class Solver(object):
         return
 
     def load_model(self, model_path):
-        self.model.load_state_dict(torch.load(model_path))
+        self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
+        self.opt.load_state_dict(torch.load(f'{model_path}.opt'))
         return
 
     def get_label_dist(self, dataset):

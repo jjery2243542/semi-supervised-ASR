@@ -348,12 +348,8 @@ class Decoder(torch.nn.Module):
 
         return ys_log_probs, prediction, w_list
 
-    def topk_decode(self, enc_pad, enc_len, k=5, max_dec_timesteps=300):
-        '''
-        can only decode one sample at a time.
-        enc_pad: [1, timesteps, hidden_size]
-        enc_len: int
-        '''
+    def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps=500):
+        batch_size = enc_pad.size(0)
 
         # initialization
         dec_c = self.zero_state(enc_pad)
@@ -363,6 +359,7 @@ class Decoder(torch.nn.Module):
         w = None
 
         prediction = []
+        logits, prediction, w_list = [], [], []
         # reset the attention module
         self.attention.reset()
 
@@ -370,6 +367,8 @@ class Decoder(torch.nn.Module):
         for t in range(max_dec_timesteps):
 
 
+        olength = max_dec_timesteps if not ys else olength
+        #for t in range(olength):
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
