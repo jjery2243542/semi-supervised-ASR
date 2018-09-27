@@ -363,12 +363,6 @@ class Decoder(torch.nn.Module):
         # reset the attention module
         self.attention.reset()
 
-        # loop for each timestep
-        for t in range(max_dec_timesteps):
-
-
-        olength = max_dec_timesteps if not ys else olength
-        #for t in range(olength):
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
