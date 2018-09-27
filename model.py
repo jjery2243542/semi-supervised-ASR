@@ -282,7 +282,7 @@ class Decoder(torch.nn.Module):
         output = torch.cat([dec_z, c], dim=-1)
         output = F.dropout(output, self.dropout_rate)
         logit = self.output_layer(output)
-        return logits, dec_z, dec_c, c, w
+        return logit, dec_z, dec_c, c, w
 
     def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500):
         batch_size = enc_pad.size(0)
