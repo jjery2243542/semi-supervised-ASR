@@ -8,7 +8,9 @@ if __name__ == '__main__':
     parser = ArgumentParser()
 
     parser.add_argument('-config', '-c', default='config.yaml')
-    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--sup_train', action='store_true')
+    parser.add_argument('--judge_train', action='store_true')
+    parser.add_argument('--load_model', action='store_true')
     parser.add_argument('--test', action='store_true')
 
     args = parser.parse_args()
@@ -16,15 +18,21 @@ if __name__ == '__main__':
     with open(args.config, 'r') as f:
         config = yaml.load(f)
 
-    solver = Solver(config)
+    if args.sup_train or args.judge_train:
+        solver = Solver(config, mode='train')
+    else:
+        solver = Solver(config)
 
-    if config['load_model']:
+    if args.load_model:
         solver.load_model(config['load_model_path'])
 
-    if args.train:
+    if args.sup_train:
         state_dict, cer = solver.sup_train()
 
-    if args.test and args.train:
+    if args.judge_train:
+        solver.judge_train()
+
+    if args.test and args.sup_train:
         solver.test(state_dict=state_dict)
     elif args.test:
         solver.test()

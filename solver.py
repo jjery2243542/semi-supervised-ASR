@@ -1,16 +1,17 @@
 import torch 
 import numpy as np
-from model import E2E
+from model import E2E, Judge
 from dataloader import get_data_loader
 from dataset import PickleDataset
-from utils import cc, _seq_mask, remove_pad_eos, ind2character, calculate_cer, char_list_to_str, to_sents, Logger
+from utils import *
 import yaml
 import os
 import pickle
 
 class Solver(object):
-    def __init__(self, config):
+    def __init__(self, config, mode='train'):
 
+        self.mode = mode
         self.config = config
         print(self.config)
 
@@ -19,18 +20,30 @@ class Solver(object):
 
         # load vocab and non lang syms
         self.load_vocab()
+       
+        # load data loaders only in training mode
+        if mode == 'train':
+            # get data loader
+            self.get_data_loaders()
+
+            # get label distribution
+            self.get_label_dist(self.train_lab_dataset)
+
+            # calculate proportion between features and characters
+            self.proportion = self.calculate_length_proportion()
 
         # build model and optimizer
-        self.build_model()
+        self.build_model(mode=mode)
 
     def save_model(self, model_path):
         torch.save(self.model.state_dict(), f'{model_path}.ckpt')
-        torch.save(self.opt.state_dict(), f'{model_path}.opt')
-        #self.model_kept.append(model_path)
-        #if len(self.model_kept) > self.max_kept:
-        #    os.remove(self.model_kept[0])
-        #    self.model_kept.pop(0)
+        torch.save(self.gen_opt.state_dict(), f'{model_path}.opt')
         return
+
+    def save_judge(self, model_path):
+        torch.save(self.judge.state_dict(), f'{model_path}.judge.ckpt')
+        torch.save(self.dis_opt.state_dict(), f'{model_path}.judge.opt')
+        return 
 
     def load_vocab(self):
         with open(self.config['vocab_path'], 'rb') as f:
@@ -41,8 +54,13 @@ class Solver(object):
 
     def load_model(self, model_path):
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
-        self.opt.load_state_dict(torch.load(f'{model_path}.opt'))
+        self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
         return
+
+    def load_judge(self, model_path):
+        self.judge.load_state_dict(torch.load(f'{model_path}.judge.ckpt'))
+        self.dis_opt.load_state_dict(torch.load(f'{model_path}.judge.opt'))
+        return 
 
     def get_label_dist(self, dataset):
         labelcount = np.zeros(len(self.vocab))
@@ -55,9 +73,9 @@ class Solver(object):
         self.labeldist = labelcount / np.sum(labelcount)
         return
 
-    def calculate_length_proportion(self, dataset):
+    def calculate_length_proportion(self):
         x_len, y_len = 0, 0
-        for x, y in dataset:
+        for x, y in self.train_lab_dataset:
             x_len += x.shape[0]
             y_len += len(y)
         return y_len / x_len
@@ -89,10 +107,13 @@ class Solver(object):
                 shuffle=False)
         return
 
-    def build_model(self):
-
-        labeldist = None if not hasattr(self, 'labeldist') else self.labeldist
-        ls_weight = 0 if not hasattr(self, 'labeldist') else self.config['ls_weight']
+    def build_model(self, mode):
+        if mode == 'train':
+            labeldist = self.labeldist
+            ls_weight = self.config['ls_weight']
+        else:
+            labeldist = None
+            ls_weight = 0
 
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
@@ -112,20 +133,64 @@ class Solver(object):
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
             ))
-
         print(self.model)
 
-        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+        # build judge model only when training mode
+        if mode == 'train':
+            self.judge = cc(Judge(dropout_rate=self.config['dropout_rate'],
+                dec_hidden_dim=self.config['dec_hidden_dim'],
+                att_odim=self.config['att_odim'],
+                embedding_dim=self.config['embedding_dim'],
+                output_dim=len(self.vocab),
+                encoder=self.model.encoder,
+                attention=self.model.attention,
+                pad=self.vocab['<PAD>'],
+                eos=self.vocab['<EOS>'],
+                shared=self.config['judge_share_param']
+                ))
+            print(self.judge)
+
+        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
+        if self.config['judge_share_param']:
+            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate']) 
+        else:
+            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'])
         return
 
-    def mask_and_cal_loss(self, log_prob, ys):
-        # add 1 to EOS
-        seq_len = [y.size(0) + 1 for y in ys]
-        mask = cc(_seq_mask(seq_len=seq_len, max_len=log_prob.size(1)))
-        # divide by total length
-        loss = -torch.sum(log_prob * mask) / sum(seq_len)
-        return loss
+    def judge_train_one_iteration(self, lab_data_iterator, unlab_data_iterator):
+        # load data
+        lab_data, unlab_data = next(lab_data_iterator), next(unlab_data_iterator)
+        lab_xs, lab_ilens, lab_ys = self.to_gpu(lab_data)
+        unlab_xs, unlab_ilens, _ = self.to_gpu(unlab_data)
+
+        # TODO:greedy decode now, change to TOPK decode
+        
+        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, 
+                max_dec_timesteps=lab_xs.size(1) * self.proportion + self.config['extra_length'])
+
+        unlab_ys_hat = remove_pad_eos(unlab_yhat, eos=self.vocab['<EOS>'])
+
+        lab_probs = self.judge(lab_xs, lab_ilens, lab_ys)
+        real_labels = cc(torch.ones(lab_probs.size(0)))
+        real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
+        real_correct = torch.sum((real_probs >= 0.5).float())
+
+        unlab_probs = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
+        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
+        fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
+        fake_correct = torch.sum((fake_probs < 0.5).float())
+
+        loss = real_loss + fake_loss
+        acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
+
+        # calculate gradients 
+        self.dis_opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
+        self.dis_opt.step()
+
+        return loss.item(), acc.item()
 
     def sup_train_one_epoch(self, epoch, tf_rate):
 
@@ -146,14 +211,14 @@ class Solver(object):
             log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate)
 
             # mask and calculate loss
-            loss = self.mask_and_cal_loss(log_probs, ys)
+            loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
             # calculate gradients 
-            self.opt.zero_grad()
+            self.gen_opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-            self.opt.step()
+            self.gen_opt.step()
 
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
@@ -213,7 +278,8 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps + 30)
+            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+                    max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
@@ -226,8 +292,7 @@ class Solver(object):
             for p in prediction_sents:
                 f.write(f'{p}\n')
 
-        print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer}')
-
+        print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
         return cer
 
     def validation(self):
@@ -248,7 +313,8 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, max_dec_timesteps=max_dec_timesteps + 15)
+            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+                    max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
@@ -261,19 +327,43 @@ class Solver(object):
 
         return avg_loss, cer, prediction_sents, ground_truth_sents
 
+    def judge_train(self):
+
+        best_model = None
+
+        # dataloader to cycle iterator 
+        lab_iter = infinite_iter(self.train_lab_loader)
+        unlab_iter = infinite_iter(self.train_lab_loader)
+
+        # adjust learning rate
+        adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+
+        # set self.model to eval mode
+        self.model.eval()
+
+        total_loss = 0.
+        judge_iterations = self.config['judge_iterations']
+        for iteration in range(judge_iterations):
+            loss, acc = self.judge_train_one_iteration(lab_iter, unlab_iter)
+            total_loss += loss
+
+            print(f'Iter:[{iteration + 1}/{judge_iterations}], loss: {loss:.3f}, acc: {acc:.3f}', end='\r')
+
+            if iteration + 1 % self.config['summary_steps']:
+                # add to tensorboard
+                tag = self.config['tag']
+                self.logger.scalar_summary(f'{tag}/judge_pretrain/train_loss', loss, iteration + 1)
+                self.logger.scalar_summary(f'{tag}/judge_pretrain/acc', acc, iteration + 1)
+                self.save_judge()
+        return 
+
     def sup_train(self):
-
-        # get data loader 
-        self.get_data_loaders()
-
-        # get label distribution
-        self.get_label_dist(self.train_lab_dataset)
 
         best_cer = 2
         best_model = None
 
         # lr scheduler
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
                 gamma=self.config['lr_gamma'])
 
@@ -303,15 +393,15 @@ class Solver(object):
 
             # add to tensorboard
             tag = self.config['tag']
-            self.logger.scalar_summary(f'{tag}/cer', cer, epoch)
-            self.logger.scalar_summary(f'{tag}/val_loss', avg_valid_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/supervised/cer', cer, epoch)
+            self.logger.scalar_summary(f'{tag}/supervised/val_loss', avg_valid_loss, epoch)
 
             # only add first n samples
             lead_n = 5
             print('-----------------')
             for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
-                self.logger.text_summary(f'prediction-{i}', p, epoch)
-                self.logger.text_summary(f'ground_truth-{i}', gt, epoch)
+                self.logger.text_summary(f'{tag}/supervised/prediction-{i}', p, epoch)
+                self.logger.text_summary(f'{tag}/supervised/ground_truth-{i}', gt, epoch)
                 print(f'hyp-{i+1}: {p}')
                 print(f'ref-{i+1}: {gt}')
             print('-----------------')
@@ -324,6 +414,7 @@ class Solver(object):
                 best_model = self.model.state_dict()
                 print(f'Save #{epoch} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                 print('-----------------')
+
         return best_model, best_cer
 
 if __name__ == '__main__':

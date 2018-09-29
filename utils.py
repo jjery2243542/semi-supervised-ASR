@@ -3,6 +3,13 @@ import numpy as np
 from tensorboardX import SummaryWriter
 import editdistance
 
+def adjust_learning_rate(optimizer, lr):
+    state_dict = optimizer.state_dict()
+    for param_group in state_dict['param_groups']:
+        param_group['lr'] = lr
+    optimizer.load_state_dict(state_dict)
+    return lr
+
 def cc(net):
     if torch.cuda.is_available():
         return net.cuda()
@@ -84,3 +91,12 @@ class Logger(object):
 
     def text_summary(self, tag, value, step):
         self.writer.add_text(tag, value, step)
+
+def infinite_iter(iterable):
+    it = iter(iterable)
+    while True:
+        try:
+            ret = next(it)
+            yield ret
+        except StopIteration:
+            it = iter(iterable)
