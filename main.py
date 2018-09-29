@@ -20,7 +20,7 @@ if __name__ == '__main__':
     with open(args.config, 'r') as f:
         config = yaml.load(f)
 
-    if args.sup_train or args.judge_train:
+    if args.sup_pretrain or args.judge_pretrain:
         solver = Solver(config, mode='train')
     else:
         solver = Solver(config)
