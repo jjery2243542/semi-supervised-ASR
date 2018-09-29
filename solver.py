@@ -52,14 +52,16 @@ class Solver(object):
             self.non_lang_syms = pickle.load(f)
         return
 
-    def load_model(self, model_path):
+    def load_model(self, model_path, load_optimizer):
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
-        self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
+        if load_optimizer:
+            self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
         return
 
-    def load_judge(self, model_path):
+    def load_judge(self, model_path, load_optmizer):
         self.judge.load_state_dict(torch.load(f'{model_path}.judge.ckpt'))
-        self.dis_opt.load_state_dict(torch.load(f'{model_path}.judge.opt'))
+        if load_optimizer:
+            self.dis_opt.load_state_dict(torch.load(f'{model_path}.judge.opt'))
         return 
 
     def get_label_dist(self, dataset):
@@ -306,7 +308,7 @@ class Solver(object):
 
             # calculate loss
             log_probs, _ , _ = self.model(xs, ilens, ys=ys)
-            loss = self.mask_and_cal_loss(log_probs, ys)
+            loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
             # max length in ys
@@ -327,7 +329,7 @@ class Solver(object):
 
         return avg_loss, cer, prediction_sents, ground_truth_sents
 
-    def judge_train(self):
+    def judge_pretrain(self):
 
         best_model = None
 
@@ -357,7 +359,45 @@ class Solver(object):
                 self.save_judge()
         return 
 
-    def sup_train(self):
+    def ssl_train_one_iteration(self, lab_data_iterator, unlab_data_iterator):
+        # load data
+        lab_data, unlab_data = next(lab_data_iterator), next(unlab_data_iterator)
+        lab_xs, lab_ilens, lab_ys = self.to_gpu(lab_data)
+        unlab_xs, unlab_ilens, _ = self.to_gpu(unlab_data)
+
+        # TODO:greedy decode now, change to TOPK decode
+        
+        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, 
+                max_dec_timesteps=lab_xs.size(1) * self.proportion + self.config['extra_length'])
+
+        unlab_ys_hat = remove_pad_eos(unlab_yhat, eos=self.vocab['<EOS>'])
+
+        lab_probs = self.judge(lab_xs, lab_ilens, lab_ys)
+        real_labels = cc(torch.ones(lab_probs.size(0)))
+        real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
+        real_correct = torch.sum((real_probs >= 0.5).float())
+
+        unlab_probs = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
+        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
+        fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
+        fake_correct = torch.sum((fake_probs < 0.5).float())
+
+        loss = real_loss + fake_loss
+        acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
+
+        # calculate gradients 
+        self.dis_opt.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
+        self.dis_opt.step()
+
+        return loss.item(), acc.item()
+        
+
+    def ssl_train(self):
+
+        
+    def sup_pretrain(self):
 
         best_cer = 2
         best_model = None

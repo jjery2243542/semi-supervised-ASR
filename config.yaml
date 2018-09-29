@@ -2,7 +2,8 @@ logdir: ./log/
 tag: test
 model_dir: /storage/model/e2e_asr/wsj/supervised
 model_name: e2e_si84
-load_model_path: 
+load_model_path:
+load_optimizer: True
 dataset_root_dir: /storage/feature/wsj/processed/deltatrue
 vocab_path: /storage/feature/wsj/processed/deltatrue/vocab_dict.pkl
 non_lang_syms_path: /storage/feature/wsj/processed/deltatrue/non_lang_syms.pkl
@@ -17,7 +18,7 @@ max_text_length: 210
 min_text_length: 2
 extra_length: 30
 max_dec_timesteps: 220
-batch_size: 24
+batch_size: 16
 shuffle: True
 input_dim: 249
 enc_hidden_dim: 320
@@ -47,4 +48,5 @@ lr_gamma: 0.2
 epochs: 300
 judge_iterations: 30000
 judge_share_param: True
+judge_steps: 5
 change_learning_rate_epoch: 50
