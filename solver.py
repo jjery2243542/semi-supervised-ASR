@@ -395,6 +395,7 @@ class Solver(object):
         
 
     def ssl_train(self):
+        pass
 
         
     def sup_pretrain(self):

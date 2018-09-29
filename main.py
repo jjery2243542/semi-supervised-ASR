@@ -30,13 +30,11 @@ if __name__ == '__main__':
     if args.load_judge:
         solver.load_judge(config['load_model_path'], config['load_optimizer'])
 
-    if args.sup_train:
+    if args.sup_pretrain:
         state_dict, cer = solver.sup_pretrain()
 
-    if args.judge_train:
+    if args.judge_pretrain:
         solver.judge_pretrain()
 
-    if args.test and args.sup_train:
-        solver.test(state_dict=state_dict)
-    elif args.test:
+    if args.test:
         solver.test()
