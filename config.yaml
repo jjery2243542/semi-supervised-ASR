@@ -10,6 +10,7 @@ summary_steps: 100
 labeled_set: train_si84
 unlabeled_set: train_si84
 dev_set: test_dev93
+test_set: test_eval92
 max_feature_length: 2100
 min_feature_length: 30
 max_text_length: 210
