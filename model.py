@@ -7,6 +7,9 @@ import numpy as np
 from utils import cc
 from utils import pad_list
 from utils import _seq_mask
+from utils import _inflate
+from utils import _inflate_np
+from torch.distributions.categorical import Categorical
 import os
 import copy
 
@@ -358,7 +361,7 @@ class Decoder(torch.nn.Module):
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -397,7 +400,13 @@ class Decoder(torch.nn.Module):
                     bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
                     emb = self.embedding(bos)
                 else:
-                    emb = self.embedding(prediction[-1])
+                    # greedy decode
+                    if not sample:
+                        emb = self.embedding(prediction[-1])
+                    else:
+                        # sample from logits
+                        sampled_indices = Categorical(logits=logit).sample() 
+                        emb = self.embedding(sampled_indices)
 
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
@@ -424,12 +433,13 @@ class Decoder(torch.nn.Module):
         return ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
+        pass
         batch_size = enc_pad.size(0)
 
         # initialization
-        dec_c = self.zero_state(enc_pad)
-        dec_z = self.zero_state(enc_pad)
-        c = self.zero_state(enc_pad, dim=self.att_odim)
+        dec_c = _inflate(self.zero_state(enc_pad), times=topk, dim=0)
+        dec_z = _inflate(self.zero_state(enc_pad), times=topk, dim=0)
+        c = _inflate(self.zero_state(enc_pad, dim=self.att_odim), times=topk, dim=0)
 
         w = None
 
@@ -437,6 +447,33 @@ class Decoder(torch.nn.Module):
         logits, prediction, ws = [], [], []
         # reset the attention module
         self.attention.reset()
+
+        # init some beam search variables
+        pos_index = torch.LongTensor(range(batch_size) * topk).view(-1, 1)
+        enc_pad = _inflate(enc_pad, times=k, dim=0)
+        enc_len = _inflate_np(np.array(enc_len), times=k, dim=0)
+
+        sequence_scores = torch.Tensor(batch_size * topk, 1)
+        sequence_scores.fill_(-float('Inf'))
+        sequence_scores.index_fill_(0, torch.LongTensor([i * self.k for i in range(0, batch_size)]), 0.0)
+
+        # Initialize the input vector
+        inp_var = torch.transpose(torch.LongTensor([[self.bos] * batch_size * self.k]), 0, 1)
+
+	# Store decisions for backtracking
+        stored_outputs = list()
+        stored_scores = list()
+        stored_predecessors = list()
+        stored_emitted_symbols = list()
+        stored_hidden = list()
+
+        for step in range(max_dec_timesteps):
+            logit, dec_z, dec_c, c, w = \
+                    self.forward_step(inp_var, dec_z, dec_c, c, w, enc_pad, enc_len)
+
+
+
+
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
@@ -469,10 +506,10 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False):
         enc_h, enc_lens = self.encoder(data, ilens)
         log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps)
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
         return log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys):

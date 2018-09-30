@@ -168,9 +168,8 @@ class Solver(object):
         lab_xs, lab_ilens, lab_ys = self.to_gpu(lab_data)
         unlab_xs, unlab_ilens, _ = self.to_gpu(unlab_data)
 
-        # TODO:greedy decode now, change to TOPK decode
-        
-        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, 
+        # random sample now
+        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
                 max_dec_timesteps=lab_xs.size(1) * self.proportion + self.config['extra_length'])
 
         unlab_ys_hat = remove_pad_eos(unlab_yhat, eos=self.vocab['<EOS>'])
@@ -194,7 +193,7 @@ class Solver(object):
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
 
-        return loss.item(), acc.item()
+        return loss.item(), acc.item(), unlab_ys_hat
 
     def sup_train_one_epoch(self, epoch, tf_rate):
 
@@ -348,7 +347,7 @@ class Solver(object):
         total_loss = 0.
         judge_iterations = self.config['judge_iterations']
         for iteration in range(judge_iterations):
-            loss, acc = self.judge_train_one_iteration(lab_iter, unlab_iter)
+            loss, acc, unlab_ys_hat = self.judge_train_one_iteration(lab_iter, unlab_iter)
             total_loss += loss
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], loss: {loss:.3f}, acc: {acc:.3f}', end='\r')
@@ -358,6 +357,7 @@ class Solver(object):
                 tag = self.config['tag']
                 self.logger.scalar_summary(f'{tag}/judge_pretrain/train_loss', loss, iteration + 1)
                 self.logger.scalar_summary(f'{tag}/judge_pretrain/acc', acc, iteration + 1)
+                for i in range(lead_n)
                 self.save_judge()
         return 
 

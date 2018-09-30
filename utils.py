@@ -3,6 +3,16 @@ import numpy as np
 from tensorboardX import SummaryWriter
 import editdistance
 
+def _inflate(tensor, times, dim):
+    repeat_dims = [1] * tensor.dim()
+    repeat_dims[dim] = times
+    return tensor.repeat(*repeat_dims)
+
+def _inflate_np(np_array, times, dim):
+    repeat_dims = [1] * np_array.ndim
+    repeat_dims[dim] = times
+    return np_array.repeat(repeat_dims)
+
 def adjust_learning_rate(optimizer, lr):
     state_dict = optimizer.state_dict()
     for param_group in state_dict['param_groups']:
