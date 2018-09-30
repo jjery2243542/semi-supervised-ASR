@@ -155,9 +155,11 @@ class Solver(object):
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         if self.config['judge_share_param']:
-            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate']) 
+            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
+                weight_decay=self.config['weight_decay'])
         else:
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'])
+            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'],
+                weight_decay=self.config['weight_decay'])
         return
 
     def judge_train_one_iteration(self, lab_data_iterator, unlab_data_iterator):
@@ -254,7 +256,7 @@ class Solver(object):
 
         # load model
         if not state_dict:
-            self.load_model(self.config['load_model_path'])
+            self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
         else:
             self.model.load_state_dict(state_dict)
 

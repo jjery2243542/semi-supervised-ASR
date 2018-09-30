@@ -423,7 +423,7 @@ class Decoder(torch.nn.Module):
 
         return ys_log_probs, prediction, ws
 
-    def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps=500):
+    def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
         batch_size = enc_pad.size(0)
 
         # initialization
@@ -437,7 +437,6 @@ class Decoder(torch.nn.Module):
         logits, prediction, ws = [], [], []
         # reset the attention module
         self.attention.reset()
-        pass
 
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
@@ -469,7 +468,6 @@ class E2E(torch.nn.Module):
                 bos=bos, 
                 eos=eos, 
                 pad=pad)
-        print(labeldist, ls_weight)
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200):
         enc_h, enc_lens = self.encoder(data, ilens)
