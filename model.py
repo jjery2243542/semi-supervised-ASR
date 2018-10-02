@@ -528,8 +528,8 @@ class Judge(torch.nn.Module):
             self.encoder = encoder
             self.attention = attention
         else:
-            self.encoder = copy.deepcopy(self.encoder)
-            self.attention = copy.deepcopy(self.attention)
+            self.encoder = copy.deepcopy(encoder)
+            self.attention = copy.deepcopy(attention)
 
         # output score for each steps 
         self.scorer = Scorer(embedding_dim=embedding_dim, hidden_dim=dec_hidden_dim, output_dim=output_dim,
