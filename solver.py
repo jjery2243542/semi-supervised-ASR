@@ -62,7 +62,7 @@ class Solver(object):
         self.judge.load_state_dict(torch.load(f'{model_path}.judge.ckpt'))
         if load_optimizer:
             self.dis_opt.load_state_dict(torch.load(f'{model_path}.judge.opt'))
-        return 
+        return
 
     def get_label_dist(self, dataset):
         labelcount = np.zeros(len(self.vocab))
@@ -162,29 +162,121 @@ class Solver(object):
                 weight_decay=self.config['weight_decay'])
         return
 
-    def judge_train_one_iteration(self, lab_data_iterator, unlab_data_iterator):
-        # load data
-        lab_data, unlab_data = next(lab_data_iterator), next(unlab_data_iterator)
-        lab_xs, lab_ilens, lab_ys = self.to_gpu(lab_data)
-        unlab_xs, unlab_ilens, _ = self.to_gpu(unlab_data)
+    def ind2sent(self, all_prediction, all_ys):
+        # remove eos and pad
+        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
 
-        # random sample now
+        # indexes to characters
+        prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
+        ground_truth_sents = to_sents(all_ys, self.vocab, self.non_lang_syms)
+
+        # calculate cer
+        cer = calculate_cer(prediction_sents, ground_truth_sents)
+        return cer, prediction_sents, ground_truth_sents
+
+    def validation(self):
+
+        self.model.eval()
+        all_prediction, all_ys = [], []
+        total_loss = 0.
+        for step, data in enumerate(self.dev_loader):
+
+            xs, ilens, ys = to_gpu(data)
+
+            # calculate loss
+            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
+            loss = self.model.mask_and_cal_loss(log_probs, ys)
+            total_loss += loss.item()
+
+            # max length in ys
+            max_dec_timesteps = max([y.size(0) for y in ys])
+
+            # feed previous
+            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+                    max_dec_timesteps=self.config['max_dec_timesteps'])
+
+            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
+            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
+
+        self.model.train()
+        # calculate loss
+        avg_loss = total_loss / len(self.dev_loader)
+
+        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
+
+        return avg_loss, cer, prediction_sents, ground_truth_sents
+
+    def test(self, state_dict=None):
+
+        # load model
+        if not state_dict:
+            self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
+        else:
+            self.model.load_state_dict(state_dict)
+
+        # get test dataset
+        root_dir = self.config['dataset_root_dir']
+        test_set = self.config['test_set']
+
+        test_dataset = PickleDataset(os.path.join(root_dir, f'{test_set}.pkl'), 
+            config=None, sort=False)
+
+        test_loader = get_data_loader(test_dataset, 
+                batch_size=1, 
+                shuffle=False)
+
+        self.model.eval()
+        all_prediction, all_ys = [], []
+
+        for step, data in enumerate(test_loader):
+
+            xs, ilens, ys = to_gpu(data)
+
+            # max length in ys
+            max_dec_timesteps = max([y.size(0) for y in ys])
+
+            # feed previous
+            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+                    max_dec_timesteps=self.config['max_dec_timesteps'])
+
+            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
+            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
+
+        self.model.train()
+
+        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
+
+        with open(f'{test_set}.txt', 'w') as f:
+            for p in prediction_sents:
+                f.write(f'{p}\n')
+
+        print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
+        return cer
+
+    def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
+        # random sample with average length
         _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-                max_dec_timesteps=lab_xs.size(1) * self.proportion + self.config['extra_length'])
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
 
-        unlab_ys_hat = remove_pad_eos(unlab_yhat, eos=self.vocab['<EOS>'])
+        unlab_ys_hat = remove_pad_eos(unlab_ys_hat, eos=self.vocab['<EOS>'])
 
-        lab_probs = self.judge(lab_xs, lab_ilens, lab_ys)
+        unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
+        return unlab_probs, unlab_ys_hat
+
+    def judge_train_one_iteration(self, lab_xs, lab_ilens, lab_ys, unlab_xs, unlab_ilens):
+        unlab_probs, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+
+        # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
         real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
         real_correct = torch.sum((real_probs >= 0.5).float())
 
-        unlab_probs = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
         fake_labels = cc(torch.zeros(unlab_probs.size(0)))
         fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
-
         loss = real_loss + fake_loss
+
         acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
 
         # calculate gradients 
@@ -193,8 +285,42 @@ class Solver(object):
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
 
-        return loss.item(), acc.item(), unlab_ys_hat
+        return real_loss.item(), fake_loss.item(), acc.item()
 
+    def judge_pretrain(self):
+
+        best_model = None
+
+        # dataloader to cycle iterator 
+        lab_iter = infinite_iter(self.train_lab_loader)
+        unlab_iter = infinite_iter(self.train_lab_loader)
+
+        # adjust learning rate
+        adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+
+        judge_iterations = self.config['judge_iterations']
+        for iteration in range(judge_iterations):
+            # load data
+            lab_data, unlab_data = next(lab_iter), next(unlab_iter)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+
+            real_loss, fake_loss, acc = self.judge_train_one_iteration(lab_xs, lab_ilens, lab_ys, 
+                    unlab_xs, unlab_ilens)
+            loss = real_loss + fake_loss
+
+            print(f'Iter:[{iteration + 1}/{judge_iterations}], '
+                f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, acc: {acc:.3f}', end='\r')
+
+            if iteration + 1 % self.config['summary_steps']:
+                # add to tensorboard
+                tag = self.config['tag']
+                self.logger.scalar_summary(f'{tag}/judge_pretrain/train_loss', loss, iteration + 1)
+                self.logger.scalar_summary(f'{tag}/judge_pretrain/acc', acc, iteration + 1)
+                model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                self.save_judge(model_path=model_path)
+        return 
+    
     def sup_train_one_epoch(self, epoch, tf_rate):
 
         total_steps = len(self.train_lab_loader)
@@ -202,7 +328,7 @@ class Solver(object):
 
         for train_steps, data in enumerate(self.train_lab_loader):
 
-            xs, ilens, ys = self.to_gpu(data)
+            xs, ilens, ys = to_gpu(data)
 
             # add gaussian noise after gaussian_epoch
             if self.config['add_gaussian'] and epoch >= self.config['gaussian_epoch']:
@@ -233,173 +359,6 @@ class Solver(object):
 
         return total_loss / total_steps
 
-    def to_gpu(self, data):
-        xs, ilens, ys = data
-        xs = cc(xs)
-        ys = [cc(y) for y in ys]
-        return xs, ilens, ys
-
-    def ind2sent(self, all_prediction, all_ys):
-        # remove eos and pad
-        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
-
-        # indexes to characters
-        prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
-        ground_truth_sents = to_sents(all_ys, self.vocab, self.non_lang_syms)
-
-        # calculate cer
-        cer = calculate_cer(prediction_sents, ground_truth_sents)
-        return cer, prediction_sents, ground_truth_sents
-
-    def test(self, state_dict=None):
-
-        # load model
-        if not state_dict:
-            self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
-        else:
-            self.model.load_state_dict(state_dict)
-
-        # get test dataset
-        root_dir = self.config['dataset_root_dir']
-        test_set = self.config['test_set']
-
-        test_dataset = PickleDataset(os.path.join(root_dir, f'{test_set}.pkl'), 
-            config=None, sort=False)
-
-        test_loader = get_data_loader(test_dataset, 
-                batch_size=1, 
-                shuffle=False)
-
-        self.model.eval()
-        all_prediction, all_ys = [], []
-
-        for step, data in enumerate(test_loader):
-
-            xs, ilens, ys = self.to_gpu(data)
-
-            # max length in ys
-            max_dec_timesteps = max([y.size(0) for y in ys])
-
-            # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
-                    max_dec_timesteps=self.config['max_dec_timesteps'])
-
-            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
-            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
-
-        self.model.train()
-
-        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
-
-        with open(f'{test_set}.txt', 'w') as f:
-            for p in prediction_sents:
-                f.write(f'{p}\n')
-
-        print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
-        return cer
-
-    def validation(self):
-
-        self.model.eval()
-        all_prediction, all_ys = [], []
-        total_loss = 0.
-        for step, data in enumerate(self.dev_loader):
-
-            xs, ilens, ys = self.to_gpu(data)
-
-            # calculate loss
-            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
-            loss = self.model.mask_and_cal_loss(log_probs, ys)
-            total_loss += loss.item()
-
-            # max length in ys
-            max_dec_timesteps = max([y.size(0) for y in ys])
-
-            # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
-                    max_dec_timesteps=self.config['max_dec_timesteps'])
-
-            all_prediction = all_prediction + prediction.cpu().numpy().tolist()
-            all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
-
-        self.model.train()
-        # calculate loss
-        avg_loss = total_loss / len(self.dev_loader)
-
-        cer, prediction_sents, ground_truth_sents = self.ind2sent(all_prediction, all_ys)
-
-        return avg_loss, cer, prediction_sents, ground_truth_sents
-
-    def judge_pretrain(self):
-
-        best_model = None
-
-        # dataloader to cycle iterator 
-        lab_iter = infinite_iter(self.train_lab_loader)
-        unlab_iter = infinite_iter(self.train_lab_loader)
-
-        # adjust learning rate
-        adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
-
-        # set self.model to eval mode
-        self.model.eval()
-
-        total_loss = 0.
-        judge_iterations = self.config['judge_iterations']
-        for iteration in range(judge_iterations):
-            loss, acc, unlab_ys_hat = self.judge_train_one_iteration(lab_iter, unlab_iter)
-            total_loss += loss
-
-            print(f'Iter:[{iteration + 1}/{judge_iterations}], loss: {loss:.3f}, acc: {acc:.3f}', end='\r')
-
-            if iteration + 1 % self.config['summary_steps']:
-                # add to tensorboard
-                tag = self.config['tag']
-                self.logger.scalar_summary(f'{tag}/judge_pretrain/train_loss', loss, iteration + 1)
-                self.logger.scalar_summary(f'{tag}/judge_pretrain/acc', acc, iteration + 1)
-                for i in range(lead_n)
-                self.save_judge()
-        return 
-
-    def ssl_train_one_iteration(self, lab_data_iterator, unlab_data_iterator):
-        # load data
-        lab_data, unlab_data = next(lab_data_iterator), next(unlab_data_iterator)
-        lab_xs, lab_ilens, lab_ys = self.to_gpu(lab_data)
-        unlab_xs, unlab_ilens, _ = self.to_gpu(unlab_data)
-
-        # TODO:greedy decode now, change to TOPK decode
-        
-        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, 
-                max_dec_timesteps=lab_xs.size(1) * self.proportion + self.config['extra_length'])
-
-        unlab_ys_hat = remove_pad_eos(unlab_yhat, eos=self.vocab['<EOS>'])
-
-        lab_probs = self.judge(lab_xs, lab_ilens, lab_ys)
-        real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
-        real_correct = torch.sum((real_probs >= 0.5).float())
-
-        unlab_probs = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
-        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
-        fake_correct = torch.sum((fake_probs < 0.5).float())
-
-        loss = real_loss + fake_loss
-        acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
-
-        # calculate gradients 
-        self.dis_opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
-        self.dis_opt.step()
-
-        return loss.item(), acc.item()
-        
-
-    def ssl_train(self):
-        pass
-
-        
     def sup_pretrain(self):
 
         best_cer = 2
@@ -460,6 +419,65 @@ class Solver(object):
 
         return best_model, best_cer
 
+    def ssl_train_one_iteration(self, lab_xs, lab_ilens, lab_ys, unlab_xs, unlab_ilens):
+        # train M steps of discriminator
+        for step in range(self.config['judge_steps']):
+            real_loss, fake_loss, dis_acc = self.judge_train_one_iteration(
+                    lab_xs, lab_ilens, lab_ys, 
+                    unlab_xs, unlab_ilens)
+        dis_loss = real_loss + fake_loss
+
+        # train 1 step of generator
+        judge_scores, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        ys_len = [len(ys) + 1 for ys in unlab_ys_hat]
+        # normalize by per sample (s - miu) / std
+        normalized_judge_scores = normalize_judge_scores(judge_scores, ys_len)
+        unlab_log_probs, _, _ = self.model(unlab_xs, unlab_ilens, ys=unlab_ys_hat)
+        unsup_loss = self.model.mask_and_cal_loss(unsup_log_probs, ys, mask=normalize_judge_scores)
+
+        # mask and calculate loss
+        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys)
+        sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
+        gen_loss = sup_loss + self.config['unsup_weight'] * unsup_loss
+
+        # calculate gradients 
+        self.gen_opt.zero_grad()
+        gen_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
+        self.gen_opt.step()
+
+        meta = {'real_loss': real_loss.item(),
+                'fake_loss': fake_loss.item(),
+                'dis_loss': dis_loss.item(),
+                'dis_acc': dis_acc.item(),
+                'unsup_loss': unsup_loss.item(),
+                'sup_loss': sup_loss.item(),
+                'gen_loss': gen_loss.item()}
+        return meta 
+
+    def ssl_train(self):
+        total_steps = self.config['ssl_iterations']
+        for train_steps in range(total_steps):
+            lab_data, unlab_data = next(lab_data_iterator), next(unlab_data_iterator)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+            meta = self.ssl_train_one_iteration(lab_xs, lab_ilens, lab_ys, unlab_xs, unlab_ilens)
+
+            # print message
+            dis_loss = meta['dis_loss']
+            dis_acc = meta['dis_acc']
+            unsup_loss = meta['upsup_loss']
+            sup_loss = meta['sup_loss']
+
+            print(f'Iter: [{train_steps + 1}/{total_steps}], dis_loss: {dis_loss:.3f}, dis_acc: {dis_acc:.3f}, '
+                    f'unsup_loss:{unsup_loss:.3f}, sup_loss:{sup_loss:.3f}', end='\r')
+            if (train_steps + 1) % self.config['summary_steps'] == 0:
+                # add to logger
+                tag = self.config['tag']
+                for key, val in meta.items():
+                    self.logger.scalar_summary(tag=f'{tag}/ssl_training/{key}', value=val, 
+                            step=train_steps + 1)
+        
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:
         config = yaml.load(f)

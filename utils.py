@@ -20,11 +20,27 @@ def adjust_learning_rate(optimizer, lr):
     optimizer.load_state_dict(state_dict)
     return lr
 
+def normalize_judge_score(judge_scores, lengths):
+    # judge_scores: [batch_size x frame_length]
+    # lengths: [len_1, len_2, ..., len_n]
+    for i in range(judge_scores.size(0)):
+        miu = torch.mean(judge_scores[b, :lengths[i]])
+        std = torch.std(judge_scores[b, :lengths[i]])
+        judge_scores[i, :lengths[i]] = (judge_scores[i, :lengths[i]] - miu) / std
+    return judge_scores
+
+
 def cc(net):
     if torch.cuda.is_available():
         return net.cuda()
     else:
         return net
+
+def to_gpu(data):
+    xs, ilens, ys = data
+    xs = cc(xs)
+    ys = [cc(y) for y in ys]
+    return xs, ilens, ys
 
 def to_sents(ind_seq, vocab, non_lang_syms):
     char_list = ind2character(ind_seq, non_lang_syms, vocab) 

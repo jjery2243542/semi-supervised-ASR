@@ -293,7 +293,7 @@ class Scorer(torch.nn.Module):
         pad_ys_in = pad_list(ys_in, pad_value=self.eos)
 
         # get length info
-        batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
+        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
         # map idx to embedding
         eys = self.embedding(pad_ys_in)
 
@@ -471,10 +471,6 @@ class Decoder(torch.nn.Module):
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(inp_var, dec_z, dec_c, c, w, enc_pad, enc_len)
 
-
-
-
-
 class E2E(torch.nn.Module):
     def __init__(self, input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim,
@@ -512,10 +508,11 @@ class E2E(torch.nn.Module):
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
         return log_probs, prediction, ws
 
-    def mask_and_cal_loss(self, log_probs, ys):
-        # add 1 to EOS
-        seq_len = [y.size(0) + 1 for y in ys]
-        mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
+    def mask_and_cal_loss(self, log_probs, ys, mask=None):
+        if not mask:
+            # add 1 to EOS
+            seq_len = [y.size(0) + 1 for y in ys]
+            mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
         # divide by total length
         loss = -torch.sum(log_probs * mask) / sum(seq_len)
         return loss
