@@ -316,7 +316,7 @@ class Scorer(torch.nn.Module):
             logits.append(logit)
 
         logits = torch.stack(logits, dim=1).squeeze(dim=2)
-        probs = F.sigmoid(logits)
+        probs = torch.sigmoid(logits)
         ws = torch.stack(ws, dim=1)
 
         return probs, ws
