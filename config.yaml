@@ -9,7 +9,7 @@ vocab_path: /storage/feature/wsj/processed/deltatrue/vocab_dict.pkl
 non_lang_syms_path: /storage/feature/wsj/processed/deltatrue/non_lang_syms.pkl
 summary_steps: 500
 labeled_set: train_si84 #train_si84
-unlabeled_set: test_dev93 #train_si284
+unlabeled_set: train_si84 #train_si284
 dev_set: test_dev93
 test_set: test_eval92
 max_feature_length: 2200

@@ -2,6 +2,81 @@ import torch
 import numpy as np
 from tensorboardX import SummaryWriter
 import editdistance
+import torch.nn as nn
+import torch.nn.init as init
+
+def weight_init(m):
+    '''
+    Usage:
+        model = Model()
+        model.apply(weight_init)
+    '''
+    if isinstance(m, nn.Conv1d):
+        init.normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.Conv2d):
+        init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.Conv3d):
+        init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose1d):
+        init.normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose2d):
+        init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.ConvTranspose3d):
+        init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.BatchNorm1d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        if m.bias is not None:
+            init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        if m.bias is not None:
+            init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.BatchNorm3d):
+        init.normal_(m.weight.data, mean=1, std=0.02)
+        if m.bias is not None:
+            init.constant_(m.bias.data, 0)
+    elif isinstance(m, nn.Linear):
+        init.xavier_normal_(m.weight.data)
+        if m.bias is not None:
+            init.normal_(m.bias.data)
+    elif isinstance(m, nn.LSTM):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                #init.orthogonal_(param.data)
+                init.normal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.LSTMCell):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+                #init.normal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.GRU):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+    elif isinstance(m, nn.GRUCell):
+        for param in m.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
 
 def _inflate(tensor, times, dim):
     repeat_dims = [1] * tensor.dim()
@@ -20,7 +95,7 @@ def adjust_learning_rate(optimizer, lr):
     optimizer.load_state_dict(state_dict)
     return lr
 
-def normalize_judge_score(judge_scores, lengths):
+def normalize_judge_scores(judge_scores, lengths):
     # judge_scores: [batch_size x frame_length]
     # lengths: [len_1, len_2, ..., len_n]
     for i in range(judge_scores.size(0)):

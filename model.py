@@ -9,6 +9,7 @@ from utils import pad_list
 from utils import _seq_mask
 from utils import _inflate
 from utils import _inflate_np
+from utils import weight_init
 from torch.distributions.categorical import Categorical
 import os
 import copy
@@ -174,9 +175,9 @@ class MultiHeadAttLoc(torch.nn.Module):
         self.heads = heads
         self.mlp_enc = torch.nn.ModuleList([torch.nn.Linear(encoder_dim, att_dim) for _ in range(self.heads)])
         self.mlp_dec = torch.nn.ModuleList([torch.nn.Linear(decoder_dim, att_dim, bias=False) \
-		for _ in range(self.heads)])
+                for _ in range(self.heads)])
         self.mlp_att = torch.nn.ModuleList([torch.nn.Linear(conv_channels, att_dim, bias=False) \
-		for _ in range(self.heads)])
+                for _ in range(self.heads)])
         self.loc_conv = torch.nn.ModuleList([torch.nn.Conv2d(
                 1, conv_channels, (1, 2 * conv_kernel_size + 1), 
                 padding=(0, conv_kernel_size), bias=False) for _ in range(self.heads)])
@@ -460,7 +461,7 @@ class Decoder(torch.nn.Module):
         # Initialize the input vector
         inp_var = torch.transpose(torch.LongTensor([[self.bos] * batch_size * self.k]), 0, 1)
 
-	# Store decisions for backtracking
+        # Store decisions for backtracking
         stored_outputs = list()
         stored_scores = list()
         stored_predecessors = list()
@@ -530,6 +531,8 @@ class Judge(torch.nn.Module):
         else:
             self.encoder = copy.deepcopy(encoder)
             self.attention = copy.deepcopy(attention)
+            #self.encoder.apply(weight_init)
+            #self.attention.apply(weight_init)
 
         # output score for each steps 
         self.scorer = Scorer(embedding_dim=embedding_dim, hidden_dim=dec_hidden_dim, output_dim=output_dim,

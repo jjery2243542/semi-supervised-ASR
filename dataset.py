@@ -3,6 +3,45 @@ from torch.utils.data import Dataset
 import os
 import pickle 
 import glob
+import numpy as np
+
+class NegativeDataset(Dataset):
+    def __init__(self, pickle_path, config=None, sort=True):
+        with open(pickle_path, 'rb') as f:
+            self.data_dict = pickle.load(f)
+
+        # remove the utterance out of limit
+        self.keys = self.get_keys(config, sort=sort)
+
+    def get_keys(self, config, sort):
+        if config:
+            max_feature_length = config['max_feature_length']
+            min_feature_length = config['min_feature_length']
+            max_text_length = config['max_text_length']
+            min_text_length = config['min_text_length']
+            keys = [key for key in self.data_dict 
+                    if self.data_dict[key]['feature'].shape[0] <= max_feature_length and 
+                    self.data_dict[key]['feature'].shape[0] >= min_feature_length and 
+                    len(self.data_dict[key]['token_ids']) <= max_text_length and 
+                    len(self.data_dict[key]['token_ids']) >= min_text_length]
+        else:
+            keys = [key for key in self.data_dict]
+
+        # sort by feature length
+        if sort:
+            keys = sorted(keys, key=lambda x: self.data_dict[x]['feature'].shape[0])
+        return keys
+
+    def __getitem__(self, index):
+        negative_index = np.random.choice(list(range(0, index)) + list(range(index + 1, len(self.keys))))
+        pos_utt_id = self.keys[index]
+        neg_utt_id = self.keys[negative_index]
+        feature = self.data_dict[pos_utt_id]['feature']
+        token_ids = self.data_dict[neg_utt_id]['token_ids']
+        return feature, token_ids
+
+    def __len__(self):
+        return len(self.keys)
 
 class PickleDataset(Dataset):
     def __init__(self, pickle_path, config=None, sort=True):

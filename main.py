@@ -37,7 +37,7 @@ if __name__ == '__main__':
         solver.judge_pretrain()
 
     if args.ssl_train:
-        solver.sll_train()
+        solver.ssl_train()
 
     if args.test:
         solver.test()
