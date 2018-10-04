@@ -10,15 +10,17 @@ non_lang_syms_path: /storage/feature/wsj/processed/deltatrue/non_lang_syms.pkl
 summary_steps: 500
 labeled_set: train_si84 #train_si84
 unlabeled_set: train_si84 #train_si284
+labeled_set: test_dev93 #train_si84
+unlabeled_set: test_dev93 #train_si284
 dev_set: test_dev93
-test_set: test_eval92
+test_set: train_si84
 max_feature_length: 2200
 min_feature_length: 30
 max_text_length: 220
 min_text_length: 2
 extra_length: 30
 max_dec_timesteps: 230
-batch_size: 16
+batch_size: 2
 shuffle: True
 input_dim: 249
 enc_hidden_dim: 320
@@ -48,7 +50,7 @@ lr_gamma: 0.2
 epochs: 20
 judge_iterations: 10000
 ssl_iterations: 50000
-judge_share_param: True
+judge_share_param: False
 judge_steps: 5
 unsup_weight: 0.01
 change_learning_rate_epoch: 50
