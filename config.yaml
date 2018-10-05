@@ -51,6 +51,7 @@ epochs: 20
 judge_iterations: 10000
 ssl_iterations: 50000
 judge_share_param: False
-judge_steps: 5
+d_steps: 1000
+g_steps: 1000
 unsup_weight: 0.01
 change_learning_rate_epoch: 50
