@@ -55,3 +55,4 @@ d_steps: 1000
 g_steps: 1000
 unsup_weight: 0.01
 change_learning_rate_epoch: 50
+gamma_increase_iterations: 30000
