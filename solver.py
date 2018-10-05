@@ -366,6 +366,7 @@ class Solver(object):
             if (iteration + 1) % self.config['summary_steps'] == 0:
                 print('')
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                self.save_judge(model_path)
         return 
     
     def sup_train_one_epoch(self, epoch, tf_rate):
@@ -466,19 +467,24 @@ class Solver(object):
 
         return best_model, best_cer
 
-    def ssl_train_one_iteration(self, 
-            lab_xs, lab_ilens, lab_ys, 
-            unlab_xs, unlab_ilens, 
-            neg_xs, neg_ilens, neg_ys):
+    def ssl_train_one_iteration(self, lab_iter, unlab_iter, neg_iter, iteration): 
 
-        # train M steps of discriminator
-        for step in range(self.config['judge_steps']):
+        # train D steps of discriminator
+        for d_step in range(self.config['d_steps']):
+            lab_data, unlab_data, neg_data = next(lab_iter), next(unlab_iter), next(neg_iter)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
+
             real_loss, fake_loss, neg_loss, dis_acc = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens)
+                    unlab_xs, unlab_ilens,
+                    neg_xs, neg_ilens, neg_ys)
+
+
         dis_loss = real_loss + (fake_loss + neg_loss) / 2
 
-        # train 1 step of generator
+        # train G step of generator
         judge_scores, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         ys_len = [len(ys) + 1 for ys in unlab_ys_hat]
         # normalize by per sample (s - miu) / std
