@@ -54,8 +54,8 @@ def weight_init(m):
     elif isinstance(m, nn.LSTM):
         for param in m.parameters():
             if len(param.shape) >= 2:
-                #init.orthogonal_(param.data)
-                init.normal_(param.data)
+                init.orthogonal_(param.data)
+                #init.normal_(param.data)
             else:
                 init.normal_(param.data)
     elif isinstance(m, nn.LSTMCell):
@@ -157,6 +157,15 @@ def remove_pad_eos(sequences, eos=2):
             eos_index = len(sequence)
         sub_sequence = sequence[:eos_index]
         sub_sequences.append(sub_sequence)
+    return sub_sequences
+
+def remove_pad_eos_batch(sequences, eos=2):
+    length = sequences.size(1)
+    indices = [length for _ in range(sequences.size(0))]
+    for i, elements in enumerate(zip(*sequences)):
+        indicators = [element == eos for element in elements]
+        indices = [i if index == length and indicator else index for index, indicator in zip(indices, indicators)]
+    sub_sequences = [sequence[:index] for index, sequence in zip(indices, sequences)]
     return sub_sequences
 
 def ind2character(sequences, non_lang_syms, vocab):

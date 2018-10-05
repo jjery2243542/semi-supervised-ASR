@@ -164,7 +164,7 @@ class Solver(object):
             self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         else:
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'],
+            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         return
 
@@ -262,9 +262,9 @@ class Solver(object):
     def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
         # random sample with average length
         _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion))
 
-        unlab_ys_hat = remove_pad_eos(unlab_ys_hat, eos=self.vocab['<EOS>'])
+        unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
         #prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
         unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
         return unlab_probs, unlab_ys_hat
@@ -277,7 +277,8 @@ class Solver(object):
             unlab_ilens,
             neg_xs, 
             neg_ilens, 
-            neg_ys):
+            neg_ys,
+            gamma=0.0):
 
         unlab_probs, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
@@ -297,7 +298,7 @@ class Solver(object):
         neg_loss, neg_probs = self.judge.mask_and_cal_loss(neg_probs, neg_ys, target=fake_labels)
         neg_correct = torch.sum((neg_probs < 0.5).float())
 
-        loss = real_loss + (fake_loss + neg_loss) / 2
+        loss = real_loss + (gamma * fake_loss + (1 - gamma) * neg_loss)
         
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
@@ -317,7 +318,8 @@ class Solver(object):
                 'neg_acc':neg_acc.item(),
                 'real_prob':torch.mean(real_probs).item(),
                 'fake_prob':torch.mean(fake_probs).item(),
-                'neg_prob':torch.mean(neg_probs).item()
+                'neg_prob':torch.mean(neg_probs).item(),
+                'gamma': gamma
             }
         return meta
 
@@ -329,7 +331,11 @@ class Solver(object):
         neg_iter = infinite_iter(self.neg_loader)
 
         judge_iterations = self.config['judge_iterations']
+        gamma_increase_iterations = self.config['gamma_increase_iterations']
+
         for iteration in range(judge_iterations):
+            gamma = 0.5 if iteration + 1 > gamma_increase_iterations else \
+                0.5 * (iteration + 1) / gamma_increase_iterations
             # load data
             lab_data, unlab_data, neg_data = next(lab_iter), next(unlab_iter), next(neg_iter) 
 
@@ -339,7 +345,7 @@ class Solver(object):
 
             meta = self.judge_train_one_iteration(lab_xs, lab_ilens, lab_ys, 
                     unlab_xs, unlab_ilens,
-                    neg_xs, neg_ilens, neg_ys)
+                    neg_xs, neg_ilens, neg_ys, gamma=gamma)
 
             real_loss = meta['real_loss']
             fake_loss = meta['fake_loss']
@@ -347,13 +353,15 @@ class Solver(object):
             acc = (meta['real_acc'] + meta['fake_acc'] + meta['neg_acc']) / 3
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
+                    f'gamma: {gamma:.2f}, '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss:{neg_loss:.3f}, '
                     f'acc: {acc:.3f}', end='\r')
 
             # add to tensorboard
-            tag = self.config['tag']
-            for key, val in meta.items():
-                self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, iteration + 1)
+            if (iteration + 1) % 50 == 0:
+                tag = self.config['tag']
+                for key, val in meta.items():
+                    self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, iteration + 1)
 
             if (iteration + 1) % self.config['summary_steps'] == 0:
                 print('')
