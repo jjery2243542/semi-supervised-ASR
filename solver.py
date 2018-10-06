@@ -109,10 +109,10 @@ class Solver(object):
                 shuffle=False)
 
         # get negative sample dataloader for judge training
-        self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
-                config=self.config, sort=True)
-        self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
-                shuffle=True)
+        #self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
+        #        config=self.config, sort=True)
+        #self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
+        #        shuffle=True)
         return
 
     def build_model(self, mode):
@@ -261,28 +261,23 @@ class Solver(object):
 
     def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
         # random sample with average length
-        _, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
+        gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion))
 
         unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
         #prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
         unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
-        return unlab_probs, unlab_ys_hat
+        return unlab_probs, unlab_ys_hat, gen_log_probs
 
     def judge_train_one_iteration(self, 
             lab_xs, 
             lab_ilens, 
             lab_ys, 
             unlab_xs, 
-            unlab_ilens,
-            neg_xs, 
-            neg_ilens, 
-            neg_ys,
-            gamma=0.0):
+            unlab_ilens):
 
-        unlab_probs, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
-        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
@@ -293,16 +288,10 @@ class Solver(object):
         fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
-        # negtive sample are also fake 
-        fake_labels = cc(torch.zeros(neg_probs.size(0)))
-        neg_loss, neg_probs = self.judge.mask_and_cal_loss(neg_probs, neg_ys, target=fake_labels)
-        neg_correct = torch.sum((neg_probs < 0.5).float())
-
-        loss = real_loss + (gamma * fake_loss + (1 - gamma) * neg_loss)
+        loss = real_loss + fake_loss
         
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_probs.size(0)
 
         # calculate gradients 
         self.dis_opt.zero_grad()
@@ -312,15 +301,11 @@ class Solver(object):
 
         meta = {'real_loss':real_loss.item(),
                 'fake_loss':fake_loss.item(),
-                'neg_loss':neg_loss.item(),
                 'real_acc':real_acc.item(),
                 'fake_acc':fake_acc.item(),
-                'neg_acc':neg_acc.item(),
                 'real_prob':torch.mean(real_probs).item(),
                 'fake_prob':torch.mean(fake_probs).item(),
-                'neg_prob':torch.mean(neg_probs).item(),
-                'gamma': gamma
-            }
+                }
         return meta
 
     def judge_pretrain(self):
@@ -328,34 +313,26 @@ class Solver(object):
         # dataloader to cycle iterator 
         lab_iter = infinite_iter(self.train_lab_loader)
         unlab_iter = infinite_iter(self.train_unlab_loader)
-        neg_iter = infinite_iter(self.neg_loader)
 
         judge_iterations = self.config['judge_iterations']
-        gamma_increase_iterations = self.config['gamma_increase_iterations']
 
         for iteration in range(judge_iterations):
-            gamma = 0.5 if iteration + 1 > gamma_increase_iterations else \
-                0.5 * (iteration + 1) / gamma_increase_iterations
             # load data
-            lab_data, unlab_data, neg_data = next(lab_iter), next(unlab_iter), next(neg_iter) 
+            lab_data, unlab_data = next(lab_iter), next(unlab_iter)
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
+            #neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
 
             meta = self.judge_train_one_iteration(lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens,
-                    neg_xs, neg_ilens, neg_ys, gamma=gamma)
+                    unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
             fake_loss = meta['fake_loss']
-            neg_loss = meta['neg_loss']
-            acc = (meta['real_acc'] + meta['fake_acc'] + meta['neg_acc']) / 3
+            acc = (meta['real_acc'] + meta['fake_acc']) / 2
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'gamma: {gamma:.2f}, '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss:{neg_loss:.3f}, '
-                    f'acc: {acc:.3f}', end='\r')
+                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, acc: {acc:.3f}', end='\r')
 
             # add to tensorboard
             if (iteration + 1) % 50 == 0:
@@ -363,7 +340,7 @@ class Solver(object):
                 for key, val in meta.items():
                     self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, iteration + 1)
 
-            if (iteration + 1) % self.config['summary_steps'] == 0:
+            if (iteration + 1) % self.config['summary_steps'] == 0 or iteration + 1 == judge_iterations:
                 print('')
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                 self.save_judge(model_path)
@@ -467,30 +444,12 @@ class Solver(object):
 
         return best_model, best_cer
 
-    def ssl_train_one_iteration(self, lab_iter, unlab_iter, neg_iter, iteration): 
+    def gen_train_one_iteration(self, 
+            lab_xs, lab_ilens, lab_ys,
+            unlab_xs, unlab_ilens):
 
-        # train D steps of discriminator
-        for d_step in range(self.config['d_steps']):
-            lab_data, unlab_data, neg_data = next(lab_iter), next(unlab_iter), next(neg_iter)
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
-
-            real_loss, fake_loss, neg_loss, dis_acc = self.judge_train_one_iteration(
-                    lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens,
-                    neg_xs, neg_ilens, neg_ys)
-
-
-        dis_loss = real_loss + (fake_loss + neg_loss) / 2
-
-        # train G step of generator
-        judge_scores, unlab_ys_hat = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        ys_len = [len(ys) + 1 for ys in unlab_ys_hat]
-        # normalize by per sample (s - miu) / std
-        normalized_judge_scores = normalize_judge_scores(judge_scores, ys_len)
-        unlab_log_probs, _, _ = self.model(unlab_xs, unlab_ilens, ys=unlab_ys_hat)
-        unsup_loss = self.model.mask_and_cal_loss(unsup_log_probs, ys, mask=normalize_judge_scores)
+        judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=judge_scores)
 
         # mask and calculate loss
         lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys)
@@ -502,15 +461,73 @@ class Solver(object):
         gen_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
         self.gen_opt.step()
+        gen_meta = {'unsup_loss': unsup_loss.item(),
+                    'sup_loss': sup_loss.item(),
+                    'gen_loss': gen_loss.item()}
+        return gen_meta
 
-        meta = {'real_loss': real_loss.item(),
-                'fake_loss': fake_loss.item(),
-                'neg_loss': neg_loss.item(),
-                'dis_loss': dis_loss.item(),
-                'dis_acc': dis_acc.item(),
-                'unsup_loss': unsup_loss.item(),
-                'sup_loss': sup_loss.item(),
-                'gen_loss': gen_loss.item()}
+
+    def ssl_train_one_iteration(self, lab_iter, unlab_iter, iteration): 
+        g_steps = self.config['g_steps']
+        d_steps = self.config['d_steps']
+
+        # train G step of generator
+        for g_step in range(g_steps):
+            # load data
+            lab_data, unlab_data = next(lab_iter), next(unlab_iter)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+
+            gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
+                    unlab_xs, unlab_ilens)
+
+            unsup_loss = gen_meta['unsup_loss']
+            sup_loss = gen_meta['sup_loss']
+            gen_loss = gen_meta['gen_loss']
+
+            print(f'Gen:[{g_step + 1}/{g_steps}], '
+                    f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, gen_loss: {gen_loss:.3f}',
+                    end='\r')
+
+            # add to tensorboard
+            if (g_step + 1) % 50 == 0:
+                step = iteration * g_steps + g_step + 1
+                tag = self.config['tag']
+                for key, val in gen_meta.items():
+                    self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
+        print()
+
+        # train D steps of discriminator
+        for d_step in range(d_steps):
+            # load data
+            lab_data, unlab_data = next(lab_iter), next(unlab_iter)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+
+            dis_meta = self.judge_train_one_iteration(
+                    lab_xs, lab_ilens, lab_ys, 
+                    unlab_xs, unlab_ilens)
+
+            real_loss = dis_meta['real_loss']
+            fake_loss = dis_meta['fake_loss']
+            acc = (dis_meta['real_acc'] + dis_meta['fake_acc']) / 2
+
+            print(f'Dis:[{d_step + 1}/{d_steps}], '
+                  f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, acc: {acc:.3f}', end='\r')
+
+            # add to tensorboard
+            if (d_step + 1) % 50 == 0:
+                step = iteration * d_steps + d_step + 1
+                tag = self.config['tag']
+                for key, val in dis_meta.items():
+                    self.logger.scalar_summary(f'{tag}/ssl_judge/{key}', val, step)
+        print()
+
+        # store model
+        model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+        self.save_judge(model_path)
+
+        meta = {**dis_meta, **gen_meta}
         return meta 
 
     def ssl_train(self):
@@ -525,57 +542,38 @@ class Solver(object):
 
         lab_iter = infinite_iter(self.train_lab_loader)
         unlab_iter = infinite_iter(self.train_unlab_loader)
-        neg_iter = infinite_iter(self.neg_loader)
 
-        for train_steps in range(total_steps):
-            lab_data, unlab_data, neg_data = next(lab_iter), next(unlab_iter), next(neg_iter)
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
+        for step in range(total_steps):
+            meta = self.ssl_train_one_iteration(lab_iter, unlab_iter, iteration=step)
+            avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
 
-            meta = self.ssl_train_one_iteration(lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens, 
-                    neg_xs, neg_ilens, neg_ys)
+            print(f'\nIter: [{step}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
 
-            # print message
-            dis_loss = meta['dis_loss']
-            dis_acc = meta['dis_acc']
-            unsup_loss = meta['upsup_loss']
-            sup_loss = meta['sup_loss']
+            # add to tensorboard
+            tag = self.config['tag']
+            self.logger.scalar_summary(f'{tag}/ssl/cer', cer, step + 1)
+            self.logger.scalar_summary(f'{tag}/ssl/val_loss', avg_valid_loss, step + 1)
+            for key, val in meta.items():
+                self.logger.scalar_summary(tag=f'{tag}/ssl/{key}', value=val, step=step + 1)
 
-            print(f'Iter: [{train_steps + 1}/{total_steps}], dis_loss: {dis_loss:.3f}, dis_acc: {dis_acc:.3f}, '
-                    f'unsup_loss:{unsup_loss:.3f}, sup_loss:{sup_loss:.3f}', end='\r')
-            if (train_steps + 1) % self.config['summary_steps'] == 0:
-                # validation
-                avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
+            # only add first n samples
+            lead_n = 5
+            print('-----------------')
+            for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
+                self.logger.text_summary(f'{tag}/ssl/prediction-{i}', p, step + 1)
+                self.logger.text_summary(f'{tag}/ssl/ground_truth-{i}', gt, step + 1)
+                print(f'hyp-{i+1}: {p}')
+                print(f'ref-{i+1}: {gt}')
+            print('-----------------')
 
-                print(f'\nIter: {train_steps}, tf_rate={tf_rate:.3f}, valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
-
-                # add to tensorboard
-                tag = self.config['tag']
-                self.logger.scalar_summary(f'{tag}/ssl/cer', cer, train_steps + 1)
-                self.logger.scalar_summary(f'{tag}/ssl/val_loss', avg_valid_loss, train_steps + 1)
-                for key, val in meta.items():
-                    self.logger.scalar_summary(tag=f'{tag}/ssl/{key}', value=val, step=train_steps + 1)
-
-                # only add first n samples
-                lead_n = 5
+            if cer < best_cer: 
+                # save model 
+                model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                best_cer = cer
+                self.save_model(model_path)
+                best_model = self.model.state_dict()
+                print(f'Save #{step} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                 print('-----------------')
-                for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
-                    self.logger.text_summary(f'{tag}/ssl/prediction-{i}', p, train_steps + 1)
-                    self.logger.text_summary(f'{tag}/ssl/ground_truth-{i}', gt, train_steps + 1)
-                    print(f'hyp-{i+1}: {p}')
-                    print(f'ref-{i+1}: {gt}')
-                print('-----------------')
-
-                if cer < best_cer: 
-                    # save model 
-                    model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
-                    best_cer = cer
-                    self.save_model(model_path)
-                    best_model = self.model.state_dict()
-                    print(f'Save #{train_steps} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
-                    print('-----------------')
         
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:

@@ -289,9 +289,9 @@ class Scorer(torch.nn.Module):
         batch_size = enc_pad.size(0)
 
         # prepare sequences
-        eos = ys[0].data.new([self.eos])
-        ys_in = [torch.cat([y, eos], dim=0) for y in ys]
-        pad_ys_in = pad_list(ys_in, pad_value=self.eos)
+        #eos = ys[0].data.new([self.eos])
+        #ys_in = [torch.cat([y, eos], dim=0) for y in ys]
+        pad_ys_in = pad_list(ys, pad_value=self.eos)
 
         # get length info
         batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
@@ -318,6 +318,7 @@ class Scorer(torch.nn.Module):
 
         logits = torch.stack(logits, dim=1).squeeze(dim=2)
         probs = torch.sigmoid(logits)
+        #print(probs)
         ws = torch.stack(ws, dim=1)
 
         return probs, ws
@@ -511,10 +512,12 @@ class E2E(torch.nn.Module):
         return log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
-        if not mask:
-            # add 1 to EOS
+        # add 1 to EOS
+        if mask is None: 
             seq_len = [y.size(0) + 1 for y in ys]
             mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
+        else:
+            seq_len = [y.size(0) for y in ys]
         # divide by total length
         loss = -torch.sum(log_probs * mask) / sum(seq_len)
         return loss
@@ -528,12 +531,12 @@ class Judge(torch.nn.Module):
         # share the parameters of encoder and attention module
         if shared:
             self.encoder = encoder
-            self.attention = attention
+            self.attention = copy.deepcopy(attention)
         else:
             self.encoder = copy.deepcopy(encoder)
             self.attention = copy.deepcopy(attention)
-            #self.encoder.apply(weight_init)
-            #self.attention.apply(weight_init)
+            self.encoder.apply(weight_init)
+            self.attention.apply(weight_init)
 
         # output score for each steps 
         self.scorer = Scorer(embedding_dim=embedding_dim, hidden_dim=dec_hidden_dim, output_dim=output_dim,
@@ -545,8 +548,8 @@ class Judge(torch.nn.Module):
         return probs, ws
 
     def mask_and_cal_loss(self, probs, ys, target):
-        # add 1 to EOS
-        seq_len = [y.size(0) + 1 for y in ys]
+
+        seq_len = [y.size(0) for y in ys]
         mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
 
         # divide by total length

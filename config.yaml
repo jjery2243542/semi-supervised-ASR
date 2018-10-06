@@ -1,7 +1,7 @@
 logdir: ./log/
 tag: judge_pretrain
 model_dir: /storage/model/e2e_asr/wsj/supervised
-model_name: e2e_si84_20_epochs
+model_name: e2e_si84_20_epochs_ssl
 load_model_path: /storage/model/e2e_asr/wsj/supervised/seed_model/e2e_si84
 load_optimizer: True
 dataset_root_dir: /storage/feature/wsj/processed/deltatrue
@@ -13,14 +13,14 @@ unlabeled_set: train_si84 #train_si284
 labeled_set: test_dev93 #train_si84
 unlabeled_set: test_dev93 #train_si284
 dev_set: test_dev93
-test_set: train_si84
-max_feature_length: 2200
+test_set: test_eval92
+max_feature_length: 2300
 min_feature_length: 30
-max_text_length: 220
+max_text_length: 250
 min_text_length: 2
-extra_length: 30
+extra_length: 15
 max_dec_timesteps: 230
-batch_size: 2
+batch_size: 16
 shuffle: True
 input_dim: 249
 enc_hidden_dim: 320
@@ -48,11 +48,10 @@ g_learning_rate: 0.0001
 d_learning_rate: 0.0002
 lr_gamma: 0.2
 epochs: 20
-judge_iterations: 10000
-ssl_iterations: 50000
-judge_share_param: False
-d_steps: 1000
-g_steps: 1000
-unsup_weight: 0.01
+judge_iterations: 1000
+ssl_iterations: 130
+judge_share_param: True
+d_steps: 500
+g_steps: 500
+unsup_weight: 0.05
 change_learning_rate_epoch: 50
-gamma_increase_iterations: 30000
