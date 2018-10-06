@@ -99,11 +99,10 @@ def normalize_judge_scores(judge_scores, lengths):
     # judge_scores: [batch_size x frame_length]
     # lengths: [len_1, len_2, ..., len_n]
     for i in range(judge_scores.size(0)):
-        miu = torch.mean(judge_scores[b, :lengths[i]])
-        std = torch.std(judge_scores[b, :lengths[i]])
+        miu = torch.mean(judge_scores[i, :lengths[i]])
+        std = torch.std(judge_scores[i, :lengths[i]]) + 1e-9
         judge_scores[i, :lengths[i]] = (judge_scores[i, :lengths[i]] - miu) / std
-    return judge_scores
-
+    return
 
 def cc(net):
     if torch.cuda.is_available():
