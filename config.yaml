@@ -1,5 +1,5 @@
 logdir: ./log/
-tag: judge_pretrain
+tag: judge_pretrain_ssl
 model_dir: /storage/model/e2e_asr/wsj/supervised
 model_name: e2e_si84_20_epochs_ssl
 load_model_path: /storage/model/e2e_asr/wsj/supervised/seed_model/e2e_si84
@@ -10,8 +10,6 @@ non_lang_syms_path: /storage/feature/wsj/processed/deltatrue/non_lang_syms.pkl
 summary_steps: 500
 labeled_set: train_si84 #train_si84
 unlabeled_set: train_si84 #train_si284
-labeled_set: test_dev93 #train_si84
-unlabeled_set: test_dev93 #train_si284
 dev_set: test_dev93
 test_set: test_eval92
 max_feature_length: 2300
@@ -36,13 +34,13 @@ conv_kernel_size: 100
 att_odim: 320
 heads: 1
 init_tf_rate: 1.0
-tf_rate_lowerbound: 0.6
-tf_decay_epochs: 120
+tf_rate_lowerbound: 1.0
+tf_decay_epochs: 20
 ls_weight: 0.05
 weight_decay: 0.000001
 gaussian_std: 0.075
-add_gaussian: True
-gaussian_epoch: 60
+add_gaussian: False
+gaussian_epoch: 20
 learning_rate: 0.0005
 g_learning_rate: 0.0001
 d_learning_rate: 0.0002

@@ -262,7 +262,7 @@ class Solver(object):
     def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
         # random sample with average length
         gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion))
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
 
         unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
         #prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
@@ -281,10 +281,14 @@ class Solver(object):
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
+        print(real_labels)
+        print(lab_probs)
         real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
         real_correct = torch.sum((real_probs >= 0.5).float())
 
         fake_labels = cc(torch.zeros(unlab_probs.size(0)))
+        print(fake_labels)
+        print(unlab_probs)
         fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
@@ -340,7 +344,7 @@ class Solver(object):
                 for key, val in meta.items():
                     self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, iteration + 1)
 
-            if (iteration + 1) % self.config['summary_steps'] == 0 or iteration + 1 == judge_iterations:
+            if (iteration + 1) % self.config['summary_steps'] == 0 or (iteration + 1) == judge_iterations:
                 print('')
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                 self.save_judge(model_path)
@@ -449,7 +453,12 @@ class Solver(object):
             unlab_xs, unlab_ilens):
 
         judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=judge_scores)
+
+        # pad judge_scores to length of unlab_log_probs
+        padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0)
+        padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
+
+        unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
 
         # mask and calculate loss
         lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys)
