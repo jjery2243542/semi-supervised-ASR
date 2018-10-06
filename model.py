@@ -415,6 +415,7 @@ class Decoder(torch.nn.Module):
             ws.append(w)
             logits.append(logit)
             prediction.append(torch.argmax(logit, dim=-1))
+            
 
         logits = torch.stack(logits, dim=1)
         log_probs = F.log_softmax(logits, dim=2)
