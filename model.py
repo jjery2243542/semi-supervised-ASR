@@ -318,7 +318,6 @@ class Scorer(torch.nn.Module):
 
         logits = torch.stack(logits, dim=1).squeeze(dim=2)
         probs = torch.sigmoid(logits)
-        #print(probs)
         ws = torch.stack(ws, dim=1)
 
         return probs, ws
@@ -547,14 +546,18 @@ class Judge(torch.nn.Module):
         probs, ws = self.scorer(enc_h, enc_lens, ys)
         return probs, ws
 
-    def mask_and_cal_loss(self, probs, ys, target):
-
+    def mask_and_average(self, probs, ys):
         seq_len = [y.size(0) for y in ys]
         mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
+        masked_probs = probs * mask
         # divide by total length
-        avg_probs = torch.sum(probs * mask, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
-        loss = F.binary_cross_entropy(avg_probs, target)
-        return loss, avg_probs
+        avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
+        return avg_probs, masked_probs, mask
+
+    #def mask_and_cal_loss(self, avg_probs, target):
+    #    avg_probs = self.mask(probs, ys)
+    #    loss = F.binary_cross_entropy(avg_probs, target)
+    #    return loss, avg_probs
 
 if __name__ == '__main__':
     # just for debugging

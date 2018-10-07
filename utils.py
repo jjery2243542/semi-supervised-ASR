@@ -5,6 +5,20 @@ import editdistance
 import torch.nn as nn
 import torch.nn.init as init
 
+class EMA(nn.Module):
+    def __init__(self, momentum):
+        super(EMA, self).__init__()
+        self.momentum = momentum
+        self.last_average = None
+        
+    def forward(self, x):
+        if self.last_average is None:
+            new_average = x
+        else:
+            new_average = (1 - self.momentum) * x + self.momentum * self.last_average
+        self.last_average = new_average
+        return new_average
+
 def weight_init(m):
     '''
     Usage:

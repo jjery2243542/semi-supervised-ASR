@@ -1,4 +1,5 @@
 import torch 
+import torch.nn.functional as F
 import numpy as np
 from model import E2E, Judge
 from dataloader import get_data_loader
@@ -157,6 +158,8 @@ class Solver(object):
                 shared=self.config['judge_share_param']
                 ))
             print(self.judge)
+            # exponential moving average
+            self.ema = EMA(momentum=self.config['ema_momentum'])
 
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
@@ -265,7 +268,7 @@ class Solver(object):
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
 
         unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
-        prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
+        #prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
         unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
         return unlab_probs, unlab_ys_hat, gen_log_probs
 
@@ -281,11 +284,13 @@ class Solver(object):
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
+        real_probs, _, _ = self.judge.mask_and_average(lab_probs, lab_ys)
+        real_loss = F.binary_cross_entropy(real_probs, real_labels)
         real_correct = torch.sum((real_probs >= 0.5).float())
 
         fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
+        fake_probs, _, _ = self.judge.mask_and_average(unlab_probs, unlab_ys_hat)
+        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
         loss = real_loss + fake_loss
@@ -451,7 +456,13 @@ class Solver(object):
             unlab_xs, unlab_ilens):
 
         judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-
+        avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
+        # baseline: average rewards per batch (from fake samples)
+        running_average = self.ema(torch.mean(avg_probs))
+        # substract baseline
+        #judge_scores = (judge_scores - running_average) * mask
+        print(judge_scores)
+        print(running_average)
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0)
         padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
