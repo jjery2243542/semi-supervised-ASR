@@ -458,11 +458,9 @@ class Solver(object):
         judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
         # baseline: average rewards per batch (from fake samples)
-        running_average = self.ema(torch.mean(avg_probs))
+        running_average = self.ema(torch.mean(avg_probs)).detach()
         # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        print(judge_scores)
-        print(running_average)
+        judge_scores = (judge_scores - running_average) * mask
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0)
         padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
