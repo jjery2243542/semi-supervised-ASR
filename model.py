@@ -551,11 +551,8 @@ class Judge(torch.nn.Module):
 
         seq_len = [y.size(0) for y in ys]
         mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
-
         # divide by total length
-        avg_probs = torch.sum(probs * mask, dim=1) / torch.sum(mask, dim=1)
-        #print(avg_probs)
-        #print(target)
+        avg_probs = torch.sum(probs * mask, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
         loss = F.binary_cross_entropy(avg_probs, target)
         return loss, avg_probs
 

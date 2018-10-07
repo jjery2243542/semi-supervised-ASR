@@ -265,7 +265,7 @@ class Solver(object):
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
 
         unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
-        #prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
+        prediction = to_sents([y.cpu().numpy() for y in unlab_ys_hat], self.vocab, self.non_lang_syms)
         unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
         return unlab_probs, unlab_ys_hat, gen_log_probs
 
@@ -281,19 +281,14 @@ class Solver(object):
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
-        print(real_labels)
-        print(lab_probs)
         real_loss, real_probs = self.judge.mask_and_cal_loss(lab_probs, lab_ys, target=real_labels)
         real_correct = torch.sum((real_probs >= 0.5).float())
 
         fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        print(fake_labels)
-        print(unlab_probs)
         fake_loss, fake_probs = self.judge.mask_and_cal_loss(unlab_probs, unlab_ys_hat, target=fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
         loss = real_loss + fake_loss
-        
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
 
@@ -332,11 +327,14 @@ class Solver(object):
                     unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
+            real_prob = meta['real_prob']
             fake_loss = meta['fake_loss']
+            fake_prob = meta['fake_prob']
             acc = (meta['real_acc'] + meta['fake_acc']) / 2
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, acc: {acc:.3f}', end='\r')
+                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.2f}, '
+                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.2f}, acc: {acc:.3f}', end='\r')
 
             # add to tensorboard
             if (iteration + 1) % 50 == 0:
