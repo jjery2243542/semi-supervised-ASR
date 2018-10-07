@@ -16,7 +16,7 @@ class EMA(nn.Module):
             new_average = x
         else:
             new_average = (1 - self.momentum) * x + self.momentum * self.last_average
-        self.last_average = new_average
+        self.last_average = new_average.detach()
         return new_average
 
 def weight_init(m):
