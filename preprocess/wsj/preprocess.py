@@ -106,9 +106,9 @@ if __name__ == '__main__':
             print(f'remove {len(utterances[labeled])} utterances in {unlabeled} set')
             for utt_to_remove in utterances[labeled]:
                 data.pop(utt_to_remove)
-        data_output_path = os.path.join(output_dir, 'train_si200.pkl')
-        with open(data_output_path, 'wb') as f:
-            pickle.dump(data, f)
+            data_output_path = os.path.join(output_dir, 'train_si200.pkl')
+            with open(data_output_path, 'wb') as f:
+                pickle.dump(data, f)
         '''
         deprecate
         '''
