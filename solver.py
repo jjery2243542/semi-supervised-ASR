@@ -285,13 +285,12 @@ class Solver(object):
             unlab_xs, 
             unlab_ilens):
         batch_size = lab_xs.size(0)
-
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         # use half labeled data to sample the negative samples
         sampled_lab_probs, lab_ys_hat, _ = self.sample_and_calculate_judge_probs(
                 lab_xs[:batch_size // 2], lab_ilens[:batch_size // 2])
-
-        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+        # use another half labeled data for real examples
+        lab_probs, _ = self.judge(lab_xs[batch_size // 2:], lab_ilens[batch_size // 2:], lab_ys[batch_size // 2:])
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))

@@ -1,7 +1,7 @@
 logdir: ./log/
-tag: supervised_60_epochs
+tag: supervised_50_epochs
 model_dir: /storage/model/e2e_asr/wsj/supervised
-model_name: e2e_si84_60_epochs
+model_name: e2e_si84_50_epochs
 load_model_path: /storage/model/e2e_asr/wsj/supervised/seed_model/e2e_si84
 load_optimizer: True
 dataset_root_dir: /storage/feature/wsj/processed/deltatrue
@@ -45,7 +45,7 @@ learning_rate: 0.0005
 g_learning_rate: 0.0001
 d_learning_rate: 0.0002
 lr_gamma: 0.2
-epochs: 60
+epochs: 50
 judge_iterations: 1000
 ssl_iterations: 130
 judge_share_param: True
