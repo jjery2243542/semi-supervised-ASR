@@ -402,11 +402,10 @@ class Solver(object):
 
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
-            if (train_steps + 1) % self.config['summary_steps'] == 0:
-                # add to logger
-                tag = self.config['tag']
-                self.logger.scalar_summary(tag=f'{tag}/train_loss', value=loss.item(), 
-                        step=epoch * total_steps + train_steps + 1)
+            # add to logger
+            tag = self.config['tag']
+            self.logger.scalar_summary(tag=f'{tag}/train_loss', value=loss.item(), 
+                    step=epoch * total_steps + train_steps + 1)
 
         return total_loss / total_steps
 
@@ -467,6 +466,9 @@ class Solver(object):
                 best_model = self.model.state_dict()
                 print(f'Save #{epoch} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                 print('-----------------')
+            # save model in every epoch
+            model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+            self.save_model(f'{model_path}-{epoch:03d}')
 
         return best_model, best_cer
 
