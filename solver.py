@@ -547,7 +547,7 @@ class Solver(object):
         return meta 
 
     def ssl_train(self):
-
+        print('--------SSL training--------')
         # adjust learning rate
         adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
 
@@ -563,7 +563,7 @@ class Solver(object):
             meta = self.ssl_train_one_iteration(lab_iter, unlab_iter, iteration=step)
             avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
 
-            print(f'\nIter: [{step}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
+            print(f'Iter: [{step + 1}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
 
             # add to tensorboard
             tag = self.config['tag']
