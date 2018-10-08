@@ -250,78 +250,6 @@ class MultiHeadAttLoc(torch.nn.Module):
 #        dec_init_c = self.fcc(z)
 #        return dec_init_z, dec_init_c
 
-class Scorer(torch.nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, output_dim, 
-            attention, att_odim, dropout_rate, eos, pad):
-        super(Scorer, self).__init__()
-
-        self.eos, self.pad = eos, pad
-
-        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-
-        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
-        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, 1)
-        self.attention = attention
-
-        self.hidden_dim = hidden_dim
-        self.att_odim = att_odim
-        self.dropout_rate = dropout_rate
-
-    def zero_state(self, enc_pad, dim=None):
-        if not dim:
-            return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
-        else:
-            return enc_pad.new_zeros(enc_pad.size(0), dim)
-
-    def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
-        cell_inp = torch.cat([emb, c], dim=-1)
-        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
-        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-
-        # run attention module
-        c, w = self.attention(enc_pad, enc_len, dec_z, w)
-        output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
-        logit = self.output_layer(output)
-        return logit, dec_z, dec_c, c, w
-
-    def forward(self, enc_pad, enc_len, ys):
-        batch_size = enc_pad.size(0)
-
-        # prepare sequences
-        #eos = ys[0].data.new([self.eos])
-        #ys_in = [torch.cat([y, eos], dim=0) for y in ys]
-        pad_ys_in = pad_list(ys, pad_value=self.eos)
-
-        # get length info
-        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
-        # map idx to embedding
-        eys = self.embedding(pad_ys_in)
-
-        # initialization
-        dec_c = self.zero_state(enc_pad)
-        dec_z = self.zero_state(enc_pad)
-        c = self.zero_state(enc_pad, dim=self.att_odim)
-
-        w = None
-        logits, prediction, ws = [], [], []
-        # reset the attention module
-        self.attention.reset()
-
-        # loop for each timestep
-        for t in range(olength):
-            logit, dec_z, dec_c, c, w = \
-                    self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
-
-            ws.append(w)
-            logits.append(logit)
-
-        logits = torch.stack(logits, dim=1).squeeze(dim=2)
-        probs = torch.sigmoid(logits)
-        ws = torch.stack(ws, dim=1)
-
-        return probs, ws
-
 class Decoder(torch.nn.Module):
     def __init__(self, output_dim, embedding_dim, hidden_dim, attention, att_odim, 
             dropout_rate, bos, eos, pad, ls_weight=0, labeldist=None):
@@ -401,21 +329,18 @@ class Decoder(torch.nn.Module):
                     bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
                     emb = self.embedding(bos)
                 else:
-                    # greedy decode
-                    if not sample:
-                        emb = self.embedding(prediction[-1])
-                    else:
-                        # sample from logits
-                        sampled_indices = Categorical(logits=logit).sample() 
-                        emb = self.embedding(sampled_indices)
+                    emb = self.embedding(prediction[-1])
 
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
             ws.append(w)
             logits.append(logit)
-            prediction.append(torch.argmax(logit, dim=-1))
-            
+            if not sample:
+                prediction.append(torch.argmax(logit, dim=-1))
+            else:
+                sampled_indices = Categorical(logits=logit).sample() 
+                prediction.append(sampled_indices)
 
         logits = torch.stack(logits, dim=1)
         log_probs = F.log_softmax(logits, dim=2)
@@ -521,6 +446,78 @@ class E2E(torch.nn.Module):
         loss = -torch.sum(log_probs * mask) / sum(seq_len)
         return loss
 
+class Scorer(torch.nn.Module):
+    def __init__(self, embedding_dim, hidden_dim, output_dim, 
+            attention, att_odim, dropout_rate, eos, pad):
+        super(Scorer, self).__init__()
+
+        self.eos, self.pad = eos, pad
+
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+
+        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
+        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, 1)
+        self.attention = attention
+
+        self.hidden_dim = hidden_dim
+        self.att_odim = att_odim
+        self.dropout_rate = dropout_rate
+
+    def zero_state(self, enc_pad, dim=None):
+        if not dim:
+            return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
+        else:
+            return enc_pad.new_zeros(enc_pad.size(0), dim)
+
+    def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
+        cell_inp = torch.cat([emb, c], dim=-1)
+        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
+        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+
+        # run attention module
+        c, w = self.attention(enc_pad, enc_len, dec_z, w)
+        output = torch.cat([dec_z, c], dim=-1)
+        output = F.dropout(output, self.dropout_rate)
+        logit = self.output_layer(output)
+        return logit, dec_z, dec_c, c, w
+
+    def forward(self, enc_pad, enc_len, ys):
+        batch_size = enc_pad.size(0)
+
+        # prepare sequences
+        #eos = ys[0].data.new([self.eos])
+        #ys_in = [torch.cat([y, eos], dim=0) for y in ys]
+        pad_ys_in = pad_list(ys, pad_value=self.eos)
+
+        # get length info
+        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+        # map idx to embedding
+        eys = self.embedding(pad_ys_in)
+
+        # initialization
+        dec_c = self.zero_state(enc_pad)
+        dec_z = self.zero_state(enc_pad)
+        c = self.zero_state(enc_pad, dim=self.att_odim)
+
+        w = None
+        logits, prediction, ws = [], [], []
+        # reset the attention module
+        self.attention.reset()
+
+        # loop for each timestep
+        for t in range(olength):
+            logit, dec_z, dec_c, c, w = \
+                    self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
+
+            ws.append(w)
+            logits.append(logit)
+
+        logits = torch.stack(logits, dim=1).squeeze(dim=2)
+        probs = torch.sigmoid(logits)
+        ws = torch.stack(ws, dim=1)
+
+        return probs, ws
+
 class Judge(torch.nn.Module):
     def __init__(self, dropout_rate, dec_hidden_dim, att_odim, embedding_dim, output_dim, 
             encoder, attention, pad=0, eos=2, shared=True):
@@ -528,12 +525,12 @@ class Judge(torch.nn.Module):
         super(Judge, self).__init__()
         self.shared = shared
         # share the parameters of encoder and attention module
+        self.attention = copy.deepcopy(attention)
         if shared:
             self.encoder = encoder
-            self.attention = copy.deepcopy(attention)
         else:
             self.encoder = copy.deepcopy(encoder)
-            self.attention = copy.deepcopy(attention)
+            # re-init the parameters
             self.encoder.apply(weight_init)
             self.attention.apply(weight_init)
 
