@@ -319,7 +319,7 @@ class Solver(object):
         unlab_iter = infinite_iter(self.train_unlab_loader)
 
         judge_iterations = self.config['judge_iterations']
-
+        print('--------Judge pretraining--------')
         for iteration in range(judge_iterations):
             # load data
             lab_data, unlab_data = next(lab_iter), next(unlab_iter)
@@ -454,19 +454,18 @@ class Solver(object):
     def gen_train_one_iteration(self, 
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
-
         judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
         # baseline: average rewards per batch (from fake samples)
-        running_average = self.ema(torch.mean(avg_probs)).detach()
+        #running_average = self.ema(torch.mean(avg_probs)).detach()
         # substract baseline
-        judge_scores = (judge_scores - running_average) * mask
+        #judge_scores = (judge_scores - running_average) * mask
+        judge_scores = judge_scores * mask
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0)
         padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
 
         unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
-
         # mask and calculate loss
         lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys)
         sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
