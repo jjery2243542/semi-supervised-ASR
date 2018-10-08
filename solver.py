@@ -98,7 +98,7 @@ class Solver(object):
         self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
             config=self.config, sort=True)
         self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
-                batch_size=self.config['batch_size'] // 2, 
+                batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'])
 
         # get dev dataset
@@ -284,8 +284,10 @@ class Solver(object):
             lab_ys, 
             unlab_xs, 
             unlab_ilens):
-        batch_size = lab_xs.size(0)
+
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+
+        batch_size = lab_xs.size(0)
         # use half labeled data to sample the negative samples
         sampled_lab_probs, lab_ys_hat, _ = self.sample_and_calculate_judge_probs(
                 lab_xs[:batch_size // 2], lab_ilens[:batch_size // 2])
@@ -331,8 +333,7 @@ class Solver(object):
                 'fake_prob':torch.mean(fake_probs).item(),
                 'sampled_prob':torch.mean(sampled_probs).item(),
                 'loss':loss.item(),
-                'acc':acc.item()
-                }
+                'acc':acc.item()}
         return meta
 
     def judge_pretrain(self):
