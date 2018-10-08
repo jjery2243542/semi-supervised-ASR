@@ -58,14 +58,17 @@ def merge_data(feature, token_ids):
 #    return sents
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        print('usage: python3 preprocess.py [root_dir] [dsets (ex. train_si84,train_si284...)] [dict_path] '
-                '[output_dir]')
+    if len(sys.argv) < 4:
+        print('usage: python3 preprocess.py [root_dir] [dict_path] [output_dir]')
 
     root_dir = sys.argv[1]
-    dsets = sys.argv[2].strip().split(',')
-    dict_path = sys.argv[3]
-    output_dir = sys.argv[4]
+    dict_path = sys.argv[2]
+    output_dir = sys.argv[3]
+
+    labeled = 'train_si84'
+    unlabeled = 'train_si284'
+    dev = 'test_dev93'
+    test = 'test_eval92'
 
     non_char_syms = ['\'', '.', '-', '<space>', '<NOISE>']
     # dump dict
@@ -79,9 +82,11 @@ if __name__ == '__main__':
     non_lang_syms_output_path = os.path.join(output_dir, 'non_lang_syms.pkl')
     with open(non_lang_syms_output_path, 'wb') as f:
         pickle.dump(non_lang_syms, f)
-    exit(0)
+    
     # process data
-    in_dir = 'deltafalse'
+    in_dir = 'deltatrue'
+    dsets = [labeled, unlabeled, dev, test]
+    utterances = {}
     for i, dset in enumerate(dsets):
         print(f'processing {dset}...')
         directory = os.path.join(root_dir, f'{dset}/{in_dir}')
@@ -92,6 +97,16 @@ if __name__ == '__main__':
         print(f'total utterance={len(data)}')
         print('dump data...')
         data_output_path = os.path.join(output_dir, f'{dset}.pkl')
+        with open(data_output_path, 'wb') as f:
+            pickle.dump(data, f)
+        # recording utterance ids
+        utterances[dset] = list(data.keys())
+        # remove the utterances in si84, and dump si200
+        if dset == unlabeled:
+            print(f'remove {len(utterances[labeled])} utterances in {unlabeled} set')
+            for utt_to_remove in utterances[labeled]:
+                data.pop(utt_to_remove)
+        data_output_path = os.path.join(output_dir, 'train_si200.pkl')
         with open(data_output_path, 'wb') as f:
             pickle.dump(data, f)
         '''
