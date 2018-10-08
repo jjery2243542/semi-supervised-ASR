@@ -98,7 +98,7 @@ class Solver(object):
         self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
             config=self.config, sort=True)
         self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
-                batch_size=self.config['batch_size'], 
+                batch_size=self.config['batch_size'] // 2, 
                 shuffle=self.config['shuffle'])
 
         # get dev dataset
@@ -284,8 +284,13 @@ class Solver(object):
             lab_ys, 
             unlab_xs, 
             unlab_ilens):
+        batch_size = lab_xs.size(0)
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        # use half labeled data to sample the negative samples
+        sampled_lab_probs, lab_ys_hat, _ = self.sample_and_calculate_judge_probs(
+                lab_xs[:batch_size // 2], lab_ilens[:batch_size // 2])
+
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # calculate loss and acc
@@ -299,10 +304,17 @@ class Solver(object):
         fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
-        loss = real_loss + fake_loss
+        fake_labels = cc(torch.zeros(sampled_lab_probs.size(0)))
+        sampled_probs, _, _ = self.judge.mask_and_average(sampled_lab_probs, lab_ys_hat)
+        sampled_loss = F.binary_cross_entropy(sampled_probs, fake_labels)
+        sampled_correct = torch.sum((sampled_probs < 0.5).float()) 
+
+        loss = real_loss + (fake_loss + sampled_loss) / 2
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
-        acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
+        sampled_acc = sampled_correct / sampled_lab_probs.size(0)
+        acc = (real_correct + fake_correct + sampled_correct) / \
+                (lab_probs.size(0) + unlab_probs.size(0) + sampled_lab_probs.size(0))
 
         # calculate gradients 
         self.dis_opt.zero_grad()
@@ -312,10 +324,13 @@ class Solver(object):
 
         meta = {'real_loss':real_loss.item(),
                 'fake_loss':fake_loss.item(),
+                'sampled_loss':sampled_loss.item(),
                 'real_acc':real_acc.item(),
                 'fake_acc':fake_acc.item(),
+                'sampled_acc':sampled_acc.item(),
                 'real_prob':torch.mean(real_probs).item(),
                 'fake_prob':torch.mean(fake_probs).item(),
+                'sampled_prob':torch.mean(sampled_probs).item(),
                 'loss':loss.item(),
                 'acc':acc.item()
                 }
@@ -337,15 +352,14 @@ class Solver(object):
                     unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
-            real_prob = meta['real_prob']
             fake_loss = meta['fake_loss']
-            fake_prob = meta['fake_prob']
+            sampled_loss = meta['sampled_loss']
 
-            acc = (meta['real_acc'] + meta['fake_acc']) / 2
+            acc = (meta['real_acc'] + meta['fake_acc'] + meta['sampled_acc']) / 3
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.2f}, '
-                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.2f}, acc: {acc:.3f}', end='\r')
+                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
+                    f', acc: {acc:.3f}', end='\r')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -528,12 +542,15 @@ class Solver(object):
                     lab_xs, lab_ilens, lab_ys, 
                     unlab_xs, unlab_ilens)
 
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-            acc = dis_meta['acc']
+            real_loss = meta['real_loss']
+            fake_loss = meta['fake_loss']
+            sampled_loss = meta['sampled_loss']
+
+            acc = (meta['real_acc'] + meta['fake_acc'] + meta['sampled_acc']) / 3
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
-                  f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, acc: {acc:.3f}', end='\r')
+                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
+                    f', acc: {acc:.3f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
