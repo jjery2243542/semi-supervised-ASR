@@ -54,6 +54,7 @@ class Solver(object):
         return
 
     def load_model(self, model_path, load_optimizer):
+        print(f'Load model from {model_path}...')
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
         if load_optimizer:
             self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
