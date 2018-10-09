@@ -489,7 +489,8 @@ class Solver(object):
         running_average = self.ema(torch.mean(avg_probs))
 
         # substract baseline
-        judge_scores = (judge_scores - running_average) * mask
+        #judge_scores = (judge_scores - running_average) * mask
+        judge_scores = judge_scores * mask
 
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
@@ -552,16 +553,16 @@ class Solver(object):
             lab_xs_for_sample, lab_ilens_for_sample, _ = to_gpu(lab_data_for_sample)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
-            meta = self.judge_train_one_iteration(
+            dis_meta = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
                     lab_xs_for_sample, lab_ilens_for_sample,
                     unlab_xs, unlab_ilens)
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-            sampled_loss = meta['sampled_loss']
+            real_loss = dis_meta['real_loss']
+            fake_loss = dis_meta['fake_loss']
+            sampled_loss = dis_meta['sampled_loss']
 
-            acc = (meta['real_acc'] + meta['fake_acc'] + meta['sampled_acc']) / 3
+            acc = (dis_meta['real_acc'] + dis_meta['fake_acc'] + dis_meta['sampled_acc']) / 3
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
