@@ -254,7 +254,7 @@ class Solver(object):
 
             # feed previous
             _ , prediction, _ = self.model(xs, ilens, ys=None, 
-                    max_dec_timesteps=self.config['max_dec_timesteps'])
+                    max_dec_timesteps=self.config['max_dec_timesteps'], sample=True)
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
@@ -292,7 +292,6 @@ class Solver(object):
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
 
-        # use one batch for supervised training
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
@@ -515,33 +514,8 @@ class Solver(object):
         return gen_meta
 
     def ssl_train_one_iteration(self, iteration): 
-        g_steps = self.config['g_steps']
         d_steps = self.config['d_steps']
-
-        # train G step of generator
-        for g_step in range(g_steps):
-            # load data
-            lab_data, unlab_data = next(self.lab_iter), next(self.unlab_iter)
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-
-            gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
-                    unlab_xs, unlab_ilens)
-
-            unsup_loss = gen_meta['unsup_loss']
-            sup_loss = gen_meta['sup_loss']
-            gen_loss = gen_meta['gen_loss']
-
-            print(f'Gen:[{g_step + 1}/{g_steps}], '
-                    f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, gen_loss: {gen_loss:.3f}',
-                    end='\r')
-
-            # add to tensorboard
-            step = iteration * g_steps + g_step + 1
-            tag = self.config['tag']
-            for key, val in gen_meta.items():
-                self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
-        print()
+        g_steps = self.config['g_steps']
 
         # train D steps of discriminator
         for d_step in range(d_steps):
@@ -568,7 +542,6 @@ class Solver(object):
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
-
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
             tag = self.config['tag']
@@ -579,6 +552,31 @@ class Solver(object):
         # store model
         model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
         self.save_judge(model_path)
+
+        # train G step of generator
+        for g_step in range(g_steps):
+            # load data
+            lab_data, unlab_data = next(self.lab_iter), next(self.unlab_iter)
+            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+
+            gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
+                    unlab_xs, unlab_ilens)
+
+            unsup_loss = gen_meta['unsup_loss']
+            sup_loss = gen_meta['sup_loss']
+            gen_loss = gen_meta['gen_loss']
+
+            print(f'Gen:[{g_step + 1}/{g_steps}], '
+                    f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, gen_loss: {gen_loss:.3f}',
+                    end='\r')
+
+            # add to tensorboard
+            step = iteration * g_steps + g_step + 1
+            tag = self.config['tag']
+            for key, val in gen_meta.items():
+                self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
+        print()
 
         meta = {**dis_meta, **gen_meta}
         return meta 
@@ -598,35 +596,34 @@ class Solver(object):
 
         for step in range(total_steps):
             meta = self.ssl_train_one_iteration(iteration=step)
-            avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
+            if step + 1 % self.config['summary_steps'] == 0 or step + 1 == total_steps:
+                avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
 
-            print(f'Iter: [{step + 1}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
+                print(f'Iter: [{step + 1}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
 
-            # add to tensorboard
-            tag = self.config['tag']
-            self.logger.scalar_summary(f'{tag}/ssl/cer', cer, step + 1)
-            self.logger.scalar_summary(f'{tag}/ssl/val_loss', avg_valid_loss, step + 1)
-            for key, val in meta.items():
-                self.logger.scalar_summary(tag=f'{tag}/ssl/{key}', value=val, step=step + 1)
+                # add to tensorboard
+                tag = self.config['tag']
+                self.logger.scalar_summary(f'{tag}/ssl/cer', cer, step + 1)
+                self.logger.scalar_summary(f'{tag}/ssl/val_loss', avg_valid_loss, step + 1)
 
-            # only add first n samples
-            lead_n = 5
-            print('-----------------')
-            for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
-                self.logger.text_summary(f'{tag}/ssl/prediction-{i}', p, step + 1)
-                self.logger.text_summary(f'{tag}/ssl/ground_truth-{i}', gt, step + 1)
-                print(f'hyp-{i+1}: {p}')
-                print(f'ref-{i+1}: {gt}')
-            print('-----------------')
-
-            if cer < best_cer: 
-                # save model 
-                model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
-                best_cer = cer
-                self.save_model(model_path)
-                best_model = self.model.state_dict()
-                print(f'Save #{step} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
+                # only add first n samples
+                lead_n = 5
                 print('-----------------')
+                for i, (p, gt) in enumerate(zip(prediction_sents[:lead_n], ground_truth_sents[:lead_n])):
+                    self.logger.text_summary(f'{tag}/ssl/prediction-{i}', p, step + 1)
+                    self.logger.text_summary(f'{tag}/ssl/ground_truth-{i}', gt, step + 1)
+                    print(f'hyp-{i+1}: {p}')
+                    print(f'ref-{i+1}: {gt}')
+                print('-----------------')
+
+                if cer < best_cer: 
+                    # save model 
+                    model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                    best_cer = cer
+                    self.save_model(model_path)
+                    best_model = self.model.state_dict()
+                    print(f'Save #{step} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
+                    print('-----------------')
         
 if __name__ == '__main__':
     with open('config.yaml', 'r') as f:
