@@ -281,18 +281,20 @@ class Solver(object):
     def judge_train_one_iteration(self, 
             lab_xs, 
             lab_ilens, 
-            lab_ys, 
+            lab_ys,
+            lab_xs_for_sample,
+            lab_ilens_for_sample,
             unlab_xs, 
             unlab_ilens):
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
 
-        batch_size = lab_xs.size(0)
-        # use half labeled data to sample the negative samples
+        # use another batch to sample negative data
         sampled_lab_probs, lab_ys_hat, _ = self.sample_and_calculate_judge_probs(
-                lab_xs[:batch_size // 2], lab_ilens[:batch_size // 2])
-        # use another half labeled data for real examples
-        lab_probs, _ = self.judge(lab_xs[batch_size // 2:], lab_ilens[batch_size // 2:], lab_ys[batch_size // 2:])
+                lab_xs_for_sample, lab_ilens_for_sample)
+
+        # use one batch for supervised training
+        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
@@ -343,12 +345,17 @@ class Solver(object):
         print('--------Judge pretraining--------')
         for iteration in range(judge_iterations):
             # load data
-            lab_data, unlab_data = next(self.lab_iter), next(self.unlab_iter)
+            lab_data = next(self.lab_iter)
+            lab_data_for_sample = next(self.lab_iter)
+            unlab_data = next(self.unlab_iter)
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            lab_xs_for_sample, lab_ilens_for_sample, _ = to_gpu(lab_data_for_sample)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
-            meta = self.judge_train_one_iteration(lab_xs, lab_ilens, lab_ys, 
+            meta = self.judge_train_one_iteration(
+                    lab_xs, lab_ilens, lab_ys, 
+                    lab_xs_for_sample, lab_ilens_for_sample,
                     unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
@@ -359,7 +366,7 @@ class Solver(object):
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
-                    f', acc: {acc:.3f}', end='\r')
+                    f', acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -536,12 +543,17 @@ class Solver(object):
         # train D steps of discriminator
         for d_step in range(d_steps):
             # load data
-            lab_data, unlab_data = next(self.lab_iter), next(self.unlab_iter)
+            lab_data = next(self.lab_iter)
+            lab_data_for_sample = next(self.lab_iter)
+            unlab_data = next(self.unlab_iter)
+
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+            lab_xs_for_sample, lab_ilens_for_sample, _ = to_gpu(lab_data_for_sample)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
-            dis_meta = self.judge_train_one_iteration(
+            meta = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
+                    lab_xs_for_sample, lab_ilens_for_sample,
                     unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
@@ -552,7 +564,7 @@ class Solver(object):
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
-                    f', acc: {acc:.3f}', end='\r')
+                    f', acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
