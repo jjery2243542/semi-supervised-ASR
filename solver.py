@@ -253,7 +253,7 @@ class Solver(object):
 
             # feed previous
             _ , prediction, _ = self.model(xs, ilens, ys=None, 
-                    max_dec_timesteps=self.config['max_dec_timesteps'], sample=True)
+                    max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
             all_ys = all_ys + [y.cpu().numpy().tolist() for y in ys]
