@@ -111,16 +111,17 @@ class Solver(object):
                 shuffle=False)
 
         # get negative sample dataloader for judge training
-        #self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
-        #        config=self.config, sort=True)
-        #self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
-        #        shuffle=True)
+        self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
+                config=self.config, sort=True)
+        self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
+                shuffle=True)
         return
 
     def get_infinite_iter(self):
         # dataloader to cycle iterator 
         self.lab_iter = infinite_iter(self.train_lab_loader)
         self.unlab_iter = infinite_iter(self.train_unlab_loader)
+        self.neg_iter = infinite_iter(self.neg_loader)
         return
 
     def build_model(self, mode):
@@ -283,19 +284,19 @@ class Solver(object):
             lab_xs, 
             lab_ilens, 
             lab_ys,
-            lab_xs_for_sample,
-            lab_ilens_for_sample,
             unlab_xs, 
-            unlab_ilens):
+            unlab_ilens,
+            neg_xs,
+            neg_ilens,
+            neg_ys):
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
 
-        # use another batch to sample negative data
-        sampled_lab_probs, lab_ys_hat, _ = self.sample_and_calculate_judge_probs(
-                lab_xs_for_sample, lab_ilens_for_sample)
-
         # use one batch for supervised training
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+
+        # use mismatched (speech, text) for negative samples
+        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))
@@ -308,17 +309,17 @@ class Solver(object):
         fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
-        fake_labels = cc(torch.zeros(sampled_lab_probs.size(0)))
-        sampled_probs, _, _ = self.judge.mask_and_average(sampled_lab_probs, lab_ys_hat)
-        sampled_loss = F.binary_cross_entropy(sampled_probs, fake_labels)
-        sampled_correct = torch.sum((sampled_probs < 0.5).float()) 
+        fake_labels = cc(torch.zeros(neg_probs.size(0)))
+        neg_probs, _, _ = self.judge.mask_and_average(neg_probs, neg_ys)
+        neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
+        neg_correct = torch.sum((neg_probs < 0.5).float()) 
 
-        loss = real_loss + (fake_loss + sampled_loss) / 2
+        loss = real_loss + (fake_loss + neg_loss) / 2
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
-        sampled_acc = sampled_correct / sampled_lab_probs.size(0)
-        acc = (real_correct + fake_correct + sampled_correct) / \
-                (lab_probs.size(0) + unlab_probs.size(0) + sampled_lab_probs.size(0))
+        neg_acc = neg_correct / neg_lab_probs.size(0)
+        acc = (real_correct + fake_correct + neg_correct) / \
+                (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
 
         # calculate gradients 
         self.dis_opt.zero_grad()
@@ -328,13 +329,13 @@ class Solver(object):
 
         meta = {'real_loss':real_loss.item(),
                 'fake_loss':fake_loss.item(),
-                'sampled_loss':sampled_loss.item(),
+                'neg_loss':neg_loss.item(),
                 'real_acc':real_acc.item(),
                 'fake_acc':fake_acc.item(),
-                'sampled_acc':sampled_acc.item(),
+                'neg_acc':neg_acc.item(),
                 'real_prob':torch.mean(real_probs).item(),
                 'fake_prob':torch.mean(fake_probs).item(),
-                'sampled_prob':torch.mean(sampled_probs).item(),
+                'neg_prob':torch.mean(neg_probs).item(),
                 'loss':loss.item(),
                 'acc':acc.item()}
         return meta
@@ -347,26 +348,26 @@ class Solver(object):
         for iteration in range(judge_iterations):
             # load data
             lab_data = next(self.lab_iter)
-            lab_data_for_sample = next(self.lab_iter)
             unlab_data = next(self.unlab_iter)
+            neg_data = next(self.neg_iter)
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            lab_xs_for_sample, lab_ilens_for_sample, _ = to_gpu(lab_data_for_sample)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
 
             meta = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
-                    lab_xs_for_sample, lab_ilens_for_sample,
-                    unlab_xs, unlab_ilens)
+                    unlab_xs, unlab_ilens,
+                    neg_xs, neg_ilens, neg_ys)
 
             real_loss = meta['real_loss']
             fake_loss = meta['fake_loss']
-            sampled_loss = meta['sampled_loss']
+            neg_loss = meta['neg_loss']
 
-            acc = (meta['real_acc'] + meta['fake_acc'] + meta['sampled_acc']) / 3
+            acc = meta['acc']
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
+                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
@@ -546,26 +547,26 @@ class Solver(object):
         for d_step in range(d_steps):
             # load data
             lab_data = next(self.lab_iter)
-            lab_data_for_sample = next(self.lab_iter)
+            neg_data = next(self.neg_iter)
             unlab_data = next(self.unlab_iter)
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            lab_xs_for_sample, lab_ilens_for_sample, _ = to_gpu(lab_data_for_sample)
+            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
             unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
             dis_meta = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
-                    lab_xs_for_sample, lab_ilens_for_sample,
-                    unlab_xs, unlab_ilens)
+                    unlab_xs, unlab_ilens,
+                    neg_xs, neg_ilens, neg_ys)
 
             real_loss = dis_meta['real_loss']
             fake_loss = dis_meta['fake_loss']
-            sampled_loss = dis_meta['sampled_loss']
+            neg_loss = dis_meta['neg_loss']
 
-            acc = (dis_meta['real_acc'] + dis_meta['fake_acc'] + dis_meta['sampled_acc']) / 3
+            acc = dis_meta['acc']
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, sampled_loss: {sampled_loss:.3f}'
+                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
