@@ -523,6 +523,7 @@ class Solver(object):
             lab_data = next(self.lab_iter)
             neg_data = next(self.neg_iter)
             unlab_data = next(self.unlab_iter)
+>>>>>>> iteratively train
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
             neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
@@ -553,13 +554,9 @@ class Solver(object):
         model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
         self.save_judge(model_path)
 
+
         # train G step of generator
         for g_step in range(g_steps):
-            # load data
-            lab_data, unlab_data = next(self.lab_iter), next(self.unlab_iter)
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-
             gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
                     unlab_xs, unlab_ilens)
 
@@ -596,7 +593,8 @@ class Solver(object):
 
         for step in range(total_steps):
             meta = self.ssl_train_one_iteration(iteration=step)
-            if step + 1 % self.config['summary_steps'] == 0 or step + 1 == total_steps:
+
+            if (step + 1) % self.config['summary_steps'] == 0 or step + 1 == total_steps:
                 avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()
 
                 print(f'Iter: [{step + 1}/{total_steps}], valid_loss={avg_valid_loss:.4f}, CER={cer:.4f}')
