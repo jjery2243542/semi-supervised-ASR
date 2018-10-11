@@ -484,8 +484,8 @@ class Solver(object):
         running_average = self.ema(torch.mean(avg_probs))
 
         # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        judge_scores = judge_scores * mask
+        judge_scores = (judge_scores - running_average) * mask
+        #judge_scores = judge_scores * mask
 
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
