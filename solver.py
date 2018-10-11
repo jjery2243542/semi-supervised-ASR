@@ -291,7 +291,6 @@ class Solver(object):
             neg_ys):
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-
         lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
@@ -368,6 +367,20 @@ class Solver(object):
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
+                    unlab_xs, unlab_ilens)
+
+            real_loss = meta['real_loss']
+            fake_loss = meta['fake_loss']
+
+            real_prob = meta['real_prob']
+            fake_prob = meta['fake_prob']
+
+            acc = meta['acc']
+
+            print(f'Iter:[{iteration + 1}/{judge_iterations}], '
+                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
+                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
+                    f'acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -523,7 +536,6 @@ class Solver(object):
             lab_data = next(self.lab_iter)
             neg_data = next(self.neg_iter)
             unlab_data = next(self.unlab_iter)
->>>>>>> iteratively train
 
             lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
             neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
@@ -543,6 +555,19 @@ class Solver(object):
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
+            real_loss = dis_meta['real_loss']
+            fake_loss = dis_meta['fake_loss']
+
+            real_prob = dis_meta['real_prob']
+            fake_prob = dis_meta['fake_prob']
+
+            acc = dis_meta['acc']
+
+            print(f'Dis:[{d_step + 1}/{d_steps}], '
+                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
+                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
+                    f'acc: {acc:.2f}', end='\r')
+
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
             tag = self.config['tag']
