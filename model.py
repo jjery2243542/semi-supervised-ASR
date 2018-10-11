@@ -124,6 +124,7 @@ class AttLoc(torch.nn.Module):
         self.encoder_dim = encoder_dim
         self.decoder_dim = decoder_dim
         self.att_dim = att_dim
+        self.att_odim = att_odim
         self.conv_channels = conv_channels
         self.enc_length = None
         self.enc_h = None
@@ -447,20 +448,19 @@ class E2E(torch.nn.Module):
         return loss
 
 class Scorer(torch.nn.Module):
-    def __init__(self, embedding_dim, hidden_dim, output_dim, 
-            attention, att_odim, dropout_rate, eos, pad):
+    def __init__(self, decoder, attention, dropout_rate, eos, pad):
         super(Scorer, self).__init__()
 
         self.eos, self.pad = eos, pad
+        
+        self.embedding = copy.deepcopy(decoder.embedding)
+        self.LSTMCell = copy.deepcopy(decoder.LSTMCell)
 
-        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-
-        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
-        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, 1)
+        self.output_layer = torch.nn.Linear(decoder.hidden_dim + decoder.att_odim, 1)
         self.attention = attention
 
-        self.hidden_dim = hidden_dim
-        self.att_odim = att_odim
+        self.hidden_dim = decoder.hidden_dim
+        self.att_odim = decoder.att_odim
         self.dropout_rate = dropout_rate
 
     def zero_state(self, enc_pad, dim=None):
@@ -519,12 +519,13 @@ class Scorer(torch.nn.Module):
         return probs, ws
 
 class Judge(torch.nn.Module):
-    def __init__(self, dropout_rate, dec_hidden_dim, att_odim, embedding_dim, output_dim, 
-            encoder, attention, pad=0, eos=2, shared=True):
+    def __init__(self,encoder, attention, decoder, dropout_rate,
+            pad=0, eos=2, shared=True):
 
         super(Judge, self).__init__()
         self.shared = shared
-        # share the parameters of encoder and attention module
+        # share the parameters of encoder
+        # init the attention module
         self.attention = copy.deepcopy(attention)
         if shared:
             self.encoder = encoder
@@ -535,8 +536,9 @@ class Judge(torch.nn.Module):
             self.attention.apply(weight_init)
 
         # output score for each steps 
-        self.scorer = Scorer(embedding_dim=embedding_dim, hidden_dim=dec_hidden_dim, output_dim=output_dim,
-                attention=self.attention, att_odim=att_odim, dropout_rate=dropout_rate, eos=eos, pad=pad)
+        self.scorer = Scorer(decoder=decoder, attention=self.attention, 
+                dropout_rate=dropout_rate, 
+                eos=eos, pad=pad)
 
     def forward(self, data, ilens, ys):
         enc_h, enc_lens = self.encoder(data, ilens)

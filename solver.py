@@ -155,12 +155,9 @@ class Solver(object):
         # build judge model only when training mode
         if mode == 'train':
             self.judge = cc(Judge(dropout_rate=self.config['dropout_rate'],
-                dec_hidden_dim=self.config['dec_hidden_dim'],
-                att_odim=self.config['att_odim'],
-                embedding_dim=self.config['embedding_dim'],
-                output_dim=len(self.vocab),
                 encoder=self.model.encoder,
                 attention=self.model.attention,
+                decoder=self.model.decoder,
                 pad=self.vocab['<PAD>'],
                 eos=self.vocab['<EOS>'],
                 shared=self.config['judge_share_param']
@@ -315,7 +312,7 @@ class Solver(object):
         loss = real_loss + (fake_loss + neg_loss) / 2
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_lab_probs.size(0)
+        neg_acc = neg_correct / neg_probs.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
 
@@ -367,7 +364,6 @@ class Solver(object):
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
-                    unlab_xs, unlab_ilens)
 
             real_loss = meta['real_loss']
             fake_loss = meta['fake_loss']
