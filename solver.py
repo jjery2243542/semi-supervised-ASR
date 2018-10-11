@@ -170,10 +170,6 @@ class Solver(object):
             print(self.judge)
             # exponential moving average
             self.ema = EMA(momentum=self.config['ema_momentum'])
-        if self.config['judge_share_param']:
-            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
-        else:
             self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
                 weight_decay=self.config['weight_decay'])
 
