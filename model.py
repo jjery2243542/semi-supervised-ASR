@@ -513,10 +513,10 @@ class Scorer(torch.nn.Module):
             logits.append(logit)
 
         logits = torch.stack(logits, dim=1).squeeze(dim=2)
-        probs = torch.sigmoid(logits)
+        #probs = torch.sigmoid(logits)
         ws = torch.stack(ws, dim=1)
 
-        return probs, ws
+        return logits, ws
 
 class Judge(torch.nn.Module):
     def __init__(self, dropout_rate, dec_hidden_dim, att_odim, embedding_dim, output_dim, 
@@ -540,16 +540,16 @@ class Judge(torch.nn.Module):
 
     def forward(self, data, ilens, ys):
         enc_h, enc_lens = self.encoder(data, ilens)
-        probs, ws = self.scorer(enc_h, enc_lens, ys)
-        return probs, ws
+        logits, ws = self.scorer(enc_h, enc_lens, ys)
+        return logits, ws
 
-    def mask_and_average(self, probs, ys):
+    def mask_and_average(self, logits, ys):
         seq_len = [y.size(0) for y in ys]
         mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
-        masked_probs = probs * mask
+        masked_logits = logits * mask
         # divide by total length
-        avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
-        return avg_probs, masked_probs, mask
+        avg_logits = torch.sum(masked_logits, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
+        return avg_logits, masked_logits, mask
 
     #def mask_and_cal_loss(self, avg_probs, target):
     #    avg_probs = self.mask(probs, ys)

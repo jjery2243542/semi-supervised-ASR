@@ -290,25 +290,25 @@ class Solver(object):
             neg_ilens,
             neg_ys):
 
-        unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+        unlab_logits, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        lab_logits, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
-        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
+        neg_logits, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
         # calculate loss and acc
-        real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_probs, _, _ = self.judge.mask_and_average(lab_probs, lab_ys)
+        real_logits, _, _ = self.judge.mask_and_average(lab_logits, lab_ys)
+        fake_logits, _, _ = self.judge.mask_and_average(unlab_logits, unlab_ys_hat)
+        neg_logits, _, _ = self.judge.mask_and_average(neg_logits, neg_ys)
+
         real_loss = F.binary_cross_entropy(real_probs, real_labels)
         real_correct = torch.sum((real_probs >= 0.5).float())
 
         fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_probs, _, _ = self.judge.mask_and_average(unlab_probs, unlab_ys_hat)
         fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
         fake_correct = torch.sum((fake_probs < 0.5).float())
 
         fake_labels = cc(torch.zeros(neg_probs.size(0)))
-        neg_probs, _, _ = self.judge.mask_and_average(neg_probs, neg_ys)
         neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
         neg_correct = torch.sum((neg_probs < 0.5).float()) 
 
