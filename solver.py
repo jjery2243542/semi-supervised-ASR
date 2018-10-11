@@ -365,19 +365,6 @@ class Solver(object):
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-
-            real_prob = meta['real_prob']
-            fake_prob = meta['fake_prob']
-
-            acc = meta['acc']
-
-            print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
-                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
-                    f'acc: {acc:.2f}', end='\r')
-
             # add to tensorboard
             tag = self.config['tag']
             for key, val in meta.items():
@@ -551,18 +538,6 @@ class Solver(object):
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-
-            real_prob = dis_meta['real_prob']
-            fake_prob = dis_meta['fake_prob']
-
-            acc = dis_meta['acc']
-
-            print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
-                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
-                    f'acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
