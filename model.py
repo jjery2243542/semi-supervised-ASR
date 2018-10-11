@@ -542,6 +542,8 @@ class Judge(torch.nn.Module):
 
     def forward(self, data, ilens, ys):
         enc_h, enc_lens = self.encoder(data, ilens)
+        if self.shared:
+            enc_h = enc_h.detach()
         probs, ws = self.scorer(enc_h, enc_lens, ys)
         return probs, ws
 

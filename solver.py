@@ -10,7 +10,7 @@ import os
 import pickle
 
 class Solver(object):
-    def __init__(self, config, mode='train'):
+    def __init__(self, config, mode='train', load_model=False):
 
         self.mode = mode
         self.config = config
@@ -34,7 +34,7 @@ class Solver(object):
             self.proportion = self.calculate_length_proportion()
 
         # build model and optimizer
-        self.build_model(mode=mode)
+        self.build_model(mode=mode, load_model=load_model)
 
     def save_model(self, model_path):
         torch.save(self.model.state_dict(), f'{model_path}.ckpt')
@@ -124,7 +124,7 @@ class Solver(object):
         self.neg_iter = infinite_iter(self.neg_loader)
         return
 
-    def build_model(self, mode):
+    def build_model(self, mode, load_model=False):
         if mode == 'train':
             labeldist = self.labeldist
             ls_weight = self.config['ls_weight']
@@ -151,6 +151,11 @@ class Solver(object):
             eos=self.vocab['<EOS>']
             ))
         print(self.model)
+        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+                weight_decay=self.config['weight_decay'])
+
+        if load_model:
+            self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
         # build judge model only when training mode
         if mode == 'train':
@@ -165,15 +170,13 @@ class Solver(object):
             print(self.judge)
             # exponential moving average
             self.ema = EMA(momentum=self.config['ema_momentum'])
-
-        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
-                weight_decay=self.config['weight_decay'])
         if self.config['judge_share_param']:
             self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         else:
             self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
                 weight_decay=self.config['weight_decay'])
+
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -365,19 +368,6 @@ class Solver(object):
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-
-            real_prob = meta['real_prob']
-            fake_prob = meta['fake_prob']
-
-            acc = meta['acc']
-
-            print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
-                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
-                    f'acc: {acc:.2f}', end='\r')
-
             # add to tensorboard
             tag = self.config['tag']
             for key, val in meta.items():
@@ -551,18 +541,6 @@ class Solver(object):
             print(f'Dis:[{d_step + 1}/{d_steps}], '
                     f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
                     f', acc: {acc:.2f}', end='\r')
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-
-            real_prob = dis_meta['real_prob']
-            fake_prob = dis_meta['fake_prob']
-
-            acc = dis_meta['acc']
-
-            print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, real_prob: {real_prob:.3f}, '
-                    f'fake_loss: {fake_loss:.3f}, fake_prob: {fake_prob:.3f}, '
-                    f'acc: {acc:.2f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
