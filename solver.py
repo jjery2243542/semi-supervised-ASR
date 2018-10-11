@@ -317,7 +317,7 @@ class Solver(object):
         loss = real_loss + (fake_loss + neg_loss) / 2
         real_acc = real_correct / lab_probs.size(0)
         fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_lab_probs.size(0)
+        neg_acc = neg_correct / neg_probs.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
 
@@ -490,8 +490,8 @@ class Solver(object):
         running_average = self.ema(torch.mean(avg_probs))
 
         # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        judge_scores = judge_scores * mask
+        judge_scores = (judge_scores - running_average) * mask
+        #judge_scores = judge_scores * mask
 
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
