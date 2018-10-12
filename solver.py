@@ -314,12 +314,13 @@ class Solver(object):
         neg_acc = neg_correct / neg_probs.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
-        param = list(self.model.encoder.parameters())
         # calculate gradients 
+        param = list(self.model.encoder.parameters())
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
+
         new_param = list(self.judge.encoder.parameters())
         p_sum = 0
         for p1, p2 in zip(param, new_param):
