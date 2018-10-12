@@ -22,9 +22,9 @@ if __name__ == '__main__':
 
     if args.load_model:
         solver = Solver(config, load_model=True)
+    else:
+        solver = Solver(config, load_model=False)
 
-    #if args.load_model:
-    #    solver.load_model(config['load_model_path'], config['load_optimizer'])
     if args.load_judge:
         solver.load_judge(config['load_model_path'], config['load_optimizer'])
 
