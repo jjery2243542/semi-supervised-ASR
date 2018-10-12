@@ -315,7 +315,7 @@ class Solver(object):
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
 
-        # calculate gradients 
+        # calculate gradients
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
