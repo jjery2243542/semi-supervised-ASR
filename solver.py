@@ -164,7 +164,6 @@ class Solver(object):
         self.ema = EMA(momentum=self.config['ema_momentum'])
         self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
             weight_decay=self.config['weight_decay'])
-
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -306,12 +305,18 @@ class Solver(object):
         neg_acc = neg_correct / neg_probs.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
-
-        # calculate gradients
+        # calculate gradients 
+        param = list(self.model.encoder.parameters())
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
+
+        new_param = list(self.judge.encoder.parameters())
+        p_sum = 0
+        for p1, p2 in zip(param, new_param):
+            p_sum += torch.sum((p1 - p2) ** 2)
+        print('encoder:', p_sum)
 
         meta = {'real_loss':real_loss.item(),
                 'fake_loss':fake_loss.item(),
@@ -477,8 +482,8 @@ class Solver(object):
         running_average = self.ema(torch.mean(avg_probs))
 
         # substract baseline
-        judge_scores = (judge_scores - running_average) * mask
-        #judge_scores = judge_scores * mask
+        #judge_scores = (judge_scores - running_average) * mask
+        judge_scores = judge_scores * mask
 
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
@@ -545,8 +550,14 @@ class Solver(object):
 
         # train G step of generator
         for g_step in range(g_steps):
+            params = list(self.judge.parameters())
             gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
                     unlab_xs, unlab_ilens)
+            new_params = list(self.judge.parameters())
+            p_sum = 0
+            for p1, p2 in zip(params, new_params):
+                p_sum += torch.sum((p1 - p2) ** 2)
+            print(p_sum)
 
             unsup_loss = gen_meta['unsup_loss']
             sup_loss = gen_meta['sup_loss']
