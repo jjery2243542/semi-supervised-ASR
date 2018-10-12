@@ -10,9 +10,8 @@ import os
 import pickle
 
 class Solver(object):
-    def __init__(self, config, mode='train', load_model=False):
+    def __init__(self, config, load_model=False):
 
-        self.mode = mode
         self.config = config
         print(self.config)
 
@@ -22,19 +21,17 @@ class Solver(object):
         # load vocab and non lang syms
         self.load_vocab()
        
-        # load data loaders only in training mode
-        if mode == 'train':
-            # get data loader
-            self.get_data_loaders()
+        # get data loader
+        self.get_data_loaders()
 
-            # get label distribution
-            self.get_label_dist(self.train_lab_dataset)
+        # get label distribution
+        self.get_label_dist(self.train_lab_dataset)
 
-            # calculate proportion between features and characters
-            self.proportion = self.calculate_length_proportion()
+        # calculate proportion between features and characters
+        self.proportion = self.calculate_length_proportion()
 
         # build model and optimizer
-        self.build_model(mode=mode, load_model=load_model)
+        self.build_model(load_model=load_model)
 
     def save_model(self, model_path):
         torch.save(self.model.state_dict(), f'{model_path}.ckpt')
@@ -125,12 +122,8 @@ class Solver(object):
         return
 
     def build_model(self, mode, load_model=False):
-        if mode == 'train':
-            labeldist = self.labeldist
-            ls_weight = self.config['ls_weight']
-        else:
-            labeldist = None
-            ls_weight = 0
+        labeldist = self.labeldist
+        ls_weight = self.config['ls_weight']
 
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
@@ -158,20 +151,19 @@ class Solver(object):
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
         # build judge model only when training mode
-        if mode == 'train':
-            self.judge = cc(Judge(dropout_rate=self.config['dropout_rate'],
-                encoder=self.model.encoder,
-                attention=self.model.attention,
-                decoder=self.model.decoder,
-                pad=self.vocab['<PAD>'],
-                eos=self.vocab['<EOS>'],
-                shared=self.config['judge_share_param']
-                ))
-            print(self.judge)
-            # exponential moving average
-            self.ema = EMA(momentum=self.config['ema_momentum'])
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+        self.judge = cc(Judge(dropout_rate=self.config['dropout_rate'],
+            encoder=self.model.encoder,
+            attention=self.model.attention,
+            decoder=self.model.decoder,
+            pad=self.vocab['<PAD>'],
+            eos=self.vocab['<EOS>'],
+            shared=self.config['judge_share_param']
+            ))
+        print(self.judge)
+        # exponential moving average
+        self.ema = EMA(momentum=self.config['ema_momentum'])
+        self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
+            weight_decay=self.config['weight_decay'])
 
         return
 
@@ -478,6 +470,7 @@ class Solver(object):
     def gen_train_one_iteration(self, 
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
+
         judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
         # baseline: exponential average
