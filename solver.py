@@ -51,10 +51,12 @@ class Solver(object):
         return
 
     def load_model(self, model_path, load_optimizer):
-        print(f'Load model from {model_path}...')
+        print(f'Load model from {model_path}.ckpt')
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
         if load_optimizer:
+            print(f'Load optmizer from {model_path}.opt')
             self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
+            adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
         return
 
     def load_judge(self, model_path, load_optmizer):
@@ -121,7 +123,7 @@ class Solver(object):
         self.neg_iter = infinite_iter(self.neg_loader)
         return
 
-    def build_model(self, mode, load_model=False):
+    def build_model(self, load_model=False):
         labeldist = self.labeldist
         ls_weight = self.config['ls_weight']
 
@@ -150,20 +152,35 @@ class Solver(object):
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
-        # build judge model only when training mode
-        self.judge = cc(Judge(dropout_rate=self.config['dropout_rate'],
-            encoder=self.model.encoder,
-            attention=self.model.attention,
-            decoder=self.model.decoder,
-            pad=self.vocab['<PAD>'],
-            eos=self.vocab['<EOS>'],
-            shared=self.config['judge_share_param']
-            ))
+        self.judge = cc(
+                Judge(encoder=self.model.encoder, 
+                    attention=self.model.attention,
+                    decoder=self.model.decoder, 
+                    input_dim=self.config['input_dim'],
+                    enc_hidden_dim=self.config['enc_hidden_dim'],
+                    enc_n_layers=self.config['enc_n_layers'],
+                    subsample=self.config['subsample'],
+                    dropout_rate=self.config['dropout_rate'],
+                    dec_hidden_dim=self.config['dec_hidden_dim'],
+                    att_dim=self.config['att_dim'],
+                    conv_channels=self.config['conv_channels'],
+                    conv_kernel_size=self.config['conv_kernel_size'],
+                    att_odim=self.config['att_odim'],
+                    embedding_dim=self.config['embedding_dim'],
+                    output_dim=len(self.vocab),
+                    pad=self.vocab['<PAD>'],
+                    eos=self.vocab['<EOS>'],
+                    shared=self.config['judge_share_param']
+                    ))
         print(self.judge)
         # exponential moving average
         self.ema = EMA(momentum=self.config['ema_momentum'])
-        self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-            weight_decay=self.config['weight_decay'])
+        if self.config['judge_share_param']:
+            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
+                weight_decay=self.config['weight_decay'])
+        else:
+            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
+                weight_decay=self.config['weight_decay'])
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -305,18 +322,12 @@ class Solver(object):
         neg_acc = neg_correct / neg_probs.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
                 (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
-        # calculate gradients 
-        param = list(self.model.encoder.parameters())
+        # calculate gradients
+
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
-
-        new_param = list(self.judge.encoder.parameters())
-        p_sum = 0
-        for p1, p2 in zip(param, new_param):
-            p_sum += torch.sum((p1 - p2) ** 2)
-        print('encoder:', p_sum)
 
         meta = {'real_loss':real_loss.item(),
                 'fake_loss':fake_loss.item(),
@@ -399,7 +410,6 @@ class Solver(object):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
             self.gen_opt.step()
-
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             # add to logger
@@ -414,20 +424,21 @@ class Solver(object):
         best_cer = 200
         best_model = None
 
-        # lr scheduler
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
-                milestones=[self.config['change_learning_rate_epoch']],
-                gamma=self.config['lr_gamma'])
-
         # tf_rate
         init_tf_rate = self.config['init_tf_rate']
         tf_decay_epochs = self.config['tf_decay_epochs']
         tf_rate_lowerbound = self.config['tf_rate_lowerbound']
+
+	# lr scheduler
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
+                milestones=[self.config['change_learning_rate_epoch']],
+                gamma=self.config['lr_gamma'])
+
         print('------supervised pretraining-------')
+
         for epoch in range(self.config['epochs']):
-
+            # schedule
             scheduler.step()
-
             # calculate tf rate
             if epoch <= tf_decay_epochs:
                 tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
@@ -492,15 +503,17 @@ class Solver(object):
         unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
 
         # mask and calculate loss
-        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys)
+        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
         gen_loss = sup_loss + self.config['unsup_weight'] * unsup_loss
 
         # calculate gradients 
+
         self.gen_opt.zero_grad()
         gen_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
         self.gen_opt.step()
+
         gen_meta = {'unsup_loss': unsup_loss.item(),
                     'sup_loss': sup_loss.item(),
                     'gen_loss': gen_loss.item()}
@@ -510,17 +523,17 @@ class Solver(object):
         d_steps = self.config['d_steps']
         g_steps = self.config['g_steps']
 
+        # load data
+        lab_data = next(self.lab_iter)
+        neg_data = next(self.neg_iter)
+        unlab_data = next(self.unlab_iter)
+
+        lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+        neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
+        unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+
         # train D steps of discriminator
         for d_step in range(d_steps):
-            # load data
-            lab_data = next(self.lab_iter)
-            neg_data = next(self.neg_iter)
-            unlab_data = next(self.unlab_iter)
-
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-
             dis_meta = self.judge_train_one_iteration(
                     lab_xs, lab_ilens, lab_ys, 
                     unlab_xs, unlab_ilens,
@@ -550,14 +563,9 @@ class Solver(object):
 
         # train G step of generator
         for g_step in range(g_steps):
-            params = list(self.judge.parameters())
-            gen_meta = self.gen_train_one_iteration(lab_xs, lab_ilens, lab_ys,
+            gen_meta = self.gen_train_one_iteration(
+                    lab_xs, lab_ilens, lab_ys,
                     unlab_xs, unlab_ilens)
-            new_params = list(self.judge.parameters())
-            p_sum = 0
-            for p1, p2 in zip(params, new_params):
-                p_sum += torch.sum((p1 - p2) ** 2)
-            print(p_sum)
 
             unsup_loss = gen_meta['unsup_loss']
             sup_loss = gen_meta['sup_loss']
@@ -574,13 +582,15 @@ class Solver(object):
                 self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
         print()
 
-        meta = {**dis_meta, **gen_meta}
-        return meta 
+        if d_steps > 0:
+            meta = {**dis_meta, **gen_meta}
+            return meta 
 
     def ssl_train(self):
         print('--------SSL training--------')
         # adjust learning rate
         adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+        print(self.gen_opt)
 
         best_cer = 1000
         best_model = None

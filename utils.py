@@ -119,10 +119,8 @@ def normalize_judge_scores(judge_scores, lengths):
     return
 
 def cc(net):
-    if torch.cuda.is_available():
-        return net.cuda()
-    else:
-        return net
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return net.to(device)
 
 def to_gpu(data):
     xs, ilens, ys = data

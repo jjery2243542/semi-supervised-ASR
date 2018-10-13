@@ -448,19 +448,23 @@ class E2E(torch.nn.Module):
         return loss
 
 class Scorer(torch.nn.Module):
-    def __init__(self, decoder, attention, dropout_rate, eos, pad):
+    def __init__(self, decoder, attention, 
+            output_dim, embedding_dim, hidden_dim, att_odim, dropout_rate, 
+            eos, pad):
         super(Scorer, self).__init__()
 
         self.eos, self.pad = eos, pad
-        
-        self.embedding = copy.deepcopy(decoder.embedding)
-        self.LSTMCell = copy.deepcopy(decoder.LSTMCell)
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
+        # load decoder weight
+        self.embedding.load_state_dict(decoder.embedding.state_dict())
+        self.LSTMCell.load_state_dict(decoder.LSTMCell.state_dict())
 
-        self.output_layer = torch.nn.Linear(decoder.hidden_dim + decoder.att_odim, 1)
+        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, 1)
         self.attention = attention
 
-        self.hidden_dim = decoder.hidden_dim
-        self.att_odim = decoder.att_odim
+        self.hidden_dim = hidden_dim
+        self.att_odim = att_odim
         self.dropout_rate = dropout_rate
 
     def zero_state(self, enc_pad, dim=None):
@@ -519,31 +523,35 @@ class Scorer(torch.nn.Module):
         return probs, ws
 
 class Judge(torch.nn.Module):
-    def __init__(self,encoder, attention, decoder, dropout_rate,
+    def __init__(self, encoder, attention, decoder, 
+            input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
+            dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim, 
+            embedding_dim, output_dim, 
             pad=0, eos=2, shared=True):
 
         super(Judge, self).__init__()
         self.shared = shared
         # share the parameters of encoder
-        # init the attention module
-        self.attention = copy.deepcopy(attention)
         if shared:
             self.encoder = encoder
         else:
-            self.encoder = copy.deepcopy(encoder)
-            # re-init the parameters
-            self.encoder.apply(weight_init)
-            self.attention.apply(weight_init)
+            self.encoder = Encoder(input_dim=input_dim, hidden_dim=enc_hidden_dim,
+                    n_layers=enc_n_layers, subsample=subsample, dropout_rate=dropout_rate)
+            self.encoder.load_state_dict(encoder.state_dict())
 
-        # output score for each steps 
-        self.scorer = Scorer(decoder=decoder, attention=self.attention, 
-                dropout_rate=dropout_rate, 
+        self.attention = AttLoc(encoder_dim=enc_hidden_dim, 
+                decoder_dim=dec_hidden_dim, att_dim=att_dim, 
+                conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
+                att_odim=att_odim)
+        self.attention.load_state_dict(attention.state_dict())
+
+        self.scorer = Scorer(decoder, self.attention, 
+                output_dim=output_dim, embedding_dim=embedding_dim, 
+                hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
                 eos=eos, pad=pad)
 
     def forward(self, data, ilens, ys):
         enc_h, enc_lens = self.encoder(data, ilens)
-        if self.shared:
-            enc_h = enc_h.detach()
         probs, ws = self.scorer(enc_h, enc_lens, ys)
         return probs, ws
 
