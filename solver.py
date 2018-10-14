@@ -295,10 +295,10 @@ class Solver(object):
             neg_ys):
 
         unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+        lab_scores, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
-        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
+        neg_scores, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
         # calculate loss and acc
         real_labels = cc(torch.ones(lab_probs.size(0)))

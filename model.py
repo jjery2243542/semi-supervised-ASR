@@ -517,10 +517,10 @@ class Scorer(torch.nn.Module):
             logits.append(logit)
 
         logits = torch.stack(logits, dim=1).squeeze(dim=2)
-        probs = torch.sigmoid(logits)
+        #probs = torch.sigmoid(logits)
         ws = torch.stack(ws, dim=1)
 
-        return probs, ws
+        return logits, ws
 
 class Judge(torch.nn.Module):
     def __init__(self, encoder, attention, decoder, 

@@ -19,6 +19,12 @@ class EMA(nn.Module):
         self.last_average = new_average.detach()
         return new_average
 
+def weight_clip(net, p=0.01):
+    for p in net.parameters:
+        p.clamp_(min=-p, max=p)
+    return
+        
+
 def weight_init(m):
     '''
     Usage:
