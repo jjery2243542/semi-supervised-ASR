@@ -294,52 +294,33 @@ class Solver(object):
             neg_ilens,
             neg_ys):
 
-        unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
+        unlab_scores, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
         lab_scores, _ = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
         neg_scores, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
         # calculate loss and acc
-        real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_probs, _, _ = self.judge.mask_and_average(lab_probs, lab_ys)
-        real_loss = F.binary_cross_entropy(real_probs, real_labels)
-        real_correct = torch.sum((real_probs >= 0.5).float())
-
-        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_probs, _, _ = self.judge.mask_and_average(unlab_probs, unlab_ys_hat)
-        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
-        fake_correct = torch.sum((fake_probs < 0.5).float())
-
-        fake_labels = cc(torch.zeros(neg_probs.size(0)))
-        neg_probs, _, _ = self.judge.mask_and_average(neg_probs, neg_ys)
-        neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
-        neg_correct = torch.sum((neg_probs < 0.5).float()) 
-
-        loss = real_loss + (fake_loss + neg_loss) / 2
-        real_acc = real_correct / lab_probs.size(0)
-        fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_probs.size(0)
-        acc = (real_correct + fake_correct + neg_correct) / \
-                (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
+        real_scores, _, _ = self.judge.mask_and_average(lab_scores, lab_ys)
+        fake_scores, _, _ = self.judge.mask_and_average(unlab_scores, unlab_ys_hat)
+        neg_scores, _, _ = self.judge.mask_and_average(neg_scores, neg_ys)
+        real_score = torch.mean(real_scores)
+        fake_score = torch.mean(fake_scores)
+        neg_score = torch.mean(neg_scores)
+        loss = -(real_score - (fake_score + neg_score) / 2)
         # calculate gradients
 
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
+        weight_clip(self.judge.scorer)
 
-        meta = {'real_loss':real_loss.item(),
-                'fake_loss':fake_loss.item(),
-                'neg_loss':neg_loss.item(),
-                'real_acc':real_acc.item(),
-                'fake_acc':fake_acc.item(),
-                'neg_acc':neg_acc.item(),
-                'real_prob':torch.mean(real_probs).item(),
-                'fake_prob':torch.mean(fake_probs).item(),
-                'neg_prob':torch.mean(neg_probs).item(),
-                'loss':loss.item(),
-                'acc':acc.item()}
+        meta = {'real_score':real_score.item(),
+                'fake_score':fake_score.item(),
+                'neg_score':neg_score.item(),
+                'loss':loss.item()
+                }
         return meta
 
     def judge_pretrain(self):
@@ -362,15 +343,15 @@ class Solver(object):
                     unlab_xs, unlab_ilens,
                     neg_xs, neg_ilens, neg_ys)
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-            neg_loss = meta['neg_loss']
+            real_score = meta['real_score']
+            fake_score = meta['fake_score']
+            neg_score = meta['neg_score']
 
-            acc = meta['acc']
+            loss = meta['loss']
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
+                    f'real_score: {real_score:.3f}, fake_score: {fake_score:.3f}, neg_score: {neg_score:.3f}'
+                    f', loss: {loss:.3f}', end='\r')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -493,8 +474,8 @@ class Solver(object):
         running_average = self.ema(torch.mean(avg_probs))
 
         # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        judge_scores = judge_scores * mask
+        judge_scores = (judge_scores - running_average) * mask
+        #judge_scores = judge_scores * mask
 
         # pad judge_scores to length of unlab_log_probs
         padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
@@ -539,15 +520,15 @@ class Solver(object):
                     unlab_xs, unlab_ilens,
                     neg_xs, neg_ilens, neg_ys)
 
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-            neg_loss = dis_meta['neg_loss']
+            real_score = dis_meta['real_score']
+            fake_score = dis_meta['fake_score']
+            neg_score = dis_meta['neg_score']
 
-            acc = dis_meta['acc']
+            loss = dis_meta['loss']
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
+                    f'real_score: {real_score:.3f}, fake_score: {fake_score:.3f}, neg_score: {neg_score:.3f}'
+                    f', loss: {loss:.3f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
