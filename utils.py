@@ -4,6 +4,7 @@ from tensorboardX import SummaryWriter
 import editdistance
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 
 def onehot(input_x, encode_dim=None):
     if encode_dim is None:
@@ -20,7 +21,7 @@ def gumbel_softmax_sample(logits, temperature=1.):
     y = logits + cc(sample_gumbel(logits.size()))
     return F.softmax(y / temperature, dim=-1)
 
-def gumbel_softmax(logits, temperature=1., hard=False):
+def gumbel_softmax(logits, temperature=0.9, hard=False):
     y = gumbel_softmax_sample(logits, temperature)
     if hard:
         _, max_ind = torch.max(y, dim=-1, keepdim=True)

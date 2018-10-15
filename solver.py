@@ -205,7 +205,7 @@ class Solver(object):
             xs, ilens, ys = to_gpu(data)
 
             # calculate loss
-            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
+            _, log_probs, _ , _ = self.model(xs, ilens, ys=ys)
             loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
@@ -213,7 +213,7 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _ , prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -257,7 +257,7 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _, prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -276,7 +276,7 @@ class Solver(object):
 
     def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
         # random sample with average length
-        gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
+        _, gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
 
         # remove tokens after eos 
@@ -399,7 +399,7 @@ class Solver(object):
                 xs = xs + gau
 
             # input the model
-            log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
+            logits, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
 
             # mask and calculate loss
             loss = self.model.mask_and_cal_loss(log_probs, ys)
@@ -503,7 +503,7 @@ class Solver(object):
         unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
 
         # mask and calculate loss
-        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
+        _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
         gen_loss = sup_loss + self.config['unsup_weight'] * unsup_loss
 

@@ -358,7 +358,7 @@ class Decoder(torch.nn.Module):
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
 
-        return ys_log_probs, prediction, ws
+        return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
         pass
@@ -432,9 +432,9 @@ class E2E(torch.nn.Module):
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False):
         enc_h, enc_lens = self.encoder(data, ilens)
-        log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
+        logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
-        return log_probs, prediction, ws
+        return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         # add 1 to EOS
