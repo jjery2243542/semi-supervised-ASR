@@ -5,6 +5,29 @@ import editdistance
 import torch.nn as nn
 import torch.nn.init as init
 
+def onehot(input_x, encode_dim=None):
+    if encode_dim is None:
+        encode_dim = torch.max(input_x) + 1
+    input_x = input_x.type(torch.LongTensor).unsqueeze(2)
+    return cc(torch.zeros(input_x.size(0), input_x.size(1), encode_dim).scatter_(-1, input_x, 1))
+
+def sample_gumbel(size, eps=1e-20):
+    u = torch.rand(size)
+    sample = -torch.log(-torch.log(u + eps) + eps)
+    return sample
+
+def gumbel_softmax_sample(logits, temperature=1.):
+    y = logits + cc(sample_gumbel(logits.size()))
+    return F.softmax(y / temperature, dim=-1)
+
+def gumbel_softmax(logits, temperature=1., hard=False):
+    y = gumbel_softmax_sample(logits, temperature)
+    if hard:
+        _, max_ind = torch.max(y, dim=-1, keepdim=True)
+        y_hard = torch.zeros_like(y).scatter_(-1, max_ind, 1.0)
+        y = (y_hard - y).detach() + y
+    return y
+
 class EMA(nn.Module):
     def __init__(self, momentum):
         super(EMA, self).__init__()
