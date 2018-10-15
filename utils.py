@@ -184,8 +184,8 @@ def ind2character(sequences, non_lang_syms, vocab):
     non_lang_syms_ind = [vocab[sym] for sym in non_lang_syms]
     char_seqs = []
     for sequence in sequences:
-        #char_seq = [inv_vocab[ind] for ind in sequence if ind not in non_lang_syms_ind]
-        char_seq = [inv_vocab[ind] for ind in sequence]
+        char_seq = [inv_vocab[ind] for ind in sequence if ind not in non_lang_syms_ind]
+        #char_seq = [inv_vocab[ind] for ind in sequence]
         char_seqs.append(char_seq)
     return char_seqs
 

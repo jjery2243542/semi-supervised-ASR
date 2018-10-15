@@ -185,8 +185,7 @@ class Solver(object):
 
     def ind2sent(self, all_prediction, all_ys):
         # remove eos and pad
-        #prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
-        prediction_til_eos = all_prediction
+        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
 
         # indexes to characters
         prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
