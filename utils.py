@@ -4,6 +4,7 @@ from tensorboardX import SummaryWriter
 import editdistance
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 
 def onehot(input_x, encode_dim=None):
     if encode_dim is None:
