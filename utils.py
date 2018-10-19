@@ -165,9 +165,10 @@ def plot_alignment(alignment, gs, idx, mode):
     plt.title('{} Steps'.format(gs))
     plt.savefig('{}/alignment_{}_{}_{}.png'.format(hp.log_dir, mode, idx, gs), format='png')
 
-def pad_list(xs, pad_value=0):
+def pad_list(xs, pad_value=0, max_length=None):
     batch_size = len(xs)
-    max_length = max(x.size(0) for x in xs)
+    if max_length is None:
+        max_length = max(x.size(0) for x in xs)
     pad = xs[0].data.new(batch_size, max_length, *xs[0].size()[1:]).fill_(pad_value)
     for i in range(batch_size):
         pad[i, :xs[i].size(0)] = xs[i]
