@@ -516,11 +516,12 @@ class OneScorer(torch.nn.Module):
             ws.append(w)
             logits.append(logit)
 
-        logits = torch.stack(logits, dim=1).squeeze(dim=2)
-        probs = torch.sigmoid(logits)
+        #logits = torch.stack(logits, dim=1).squeeze(dim=2)
+        #probs = torch.sigmoid(logits)
+        scores = logits.squeeze(dim=2)
         ws = torch.stack(ws, dim=1)
 
-        return probs, ws
+        return scores, ws
 
 class Scorer(torch.nn.Module):
     def __init__(self, decoder, attention, 
@@ -601,7 +602,7 @@ class Judge(torch.nn.Module):
     def __init__(self, encoder, attention, decoder, 
             input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim, 
-            embedding_dim, output_dim, 
+            embedding_dim, output_dim, every_step=False, 
             pad=0, eos=2, shared=True):
 
         super(Judge, self).__init__()
@@ -619,11 +620,13 @@ class Judge(torch.nn.Module):
                 conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
                 att_odim=att_odim)
         self.attention.load_state_dict(attention.state_dict())
-
-        self.scorer = Scorer(decoder, self.attention, 
-                output_dim=output_dim, embedding_dim=embedding_dim, 
-                hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
-                eos=eos, pad=pad)
+	if every_step:
+	    self.scorer = Scorer(decoder, self.attention, 
+		    output_dim=output_dim, embedding_dim=embedding_dim, 
+		    hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
+		    eos=eos, pad=pad)
+        else:
+            self.scorer = OneScorer(decoder, self.attention, output_dim=output_dim, embedding_dim=embedding_dim)
 
     def forward(self, data, ilens, ys):
         if self.shared:
