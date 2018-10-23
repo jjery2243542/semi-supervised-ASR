@@ -300,7 +300,7 @@ class Decoder(torch.nn.Module):
             ys_in = [torch.cat([bos, y], dim=0) for y in ys]
             ys_out = [torch.cat([y, eos], dim=0) for y in ys]
             pad_ys_in = pad_list(ys_in, pad_value=self.eos)
-            pad_ys_out = pad_list(ys_out, pad_value=self.pad)
+            pad_ys_out = pad_list(ys_out, pad_value=self.eos)
             # get length info
             batch_size, olength = pad_ys_out.size(0), pad_ys_out.size(1)
             # map idx to embedding

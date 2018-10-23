@@ -207,6 +207,7 @@ def calc_gradient_penalty(netD, real_data, fake_data):
     def ind2sent(self, all_prediction, all_ys):
         # remove eos and pad
         prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
+        #prediction_til_eos = all_prediction
 
         # indexes to characters
         prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
@@ -421,9 +422,9 @@ def calc_gradient_penalty(netD, real_data, fake_data):
 
             # input the model
             log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
-
             # mask and calculate loss
-            loss = self.model.mask_and_cal_loss(log_probs, ys)
+            loss = -torch.mean(log_probs)
+            #loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
             # calculate gradients 
