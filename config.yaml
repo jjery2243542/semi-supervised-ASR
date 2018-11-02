@@ -54,3 +54,4 @@ g_steps: 500
 unsup_weight: 0.05
 change_learning_rate_epoch: 100
 ema_momentum: 0.99
+lambda_gp: 10

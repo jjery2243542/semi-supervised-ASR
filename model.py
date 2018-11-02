@@ -10,6 +10,8 @@ from utils import _seq_mask
 from utils import _inflate
 from utils import _inflate_np
 from utils import weight_init
+from utils import onehot
+from utils import MyLSTMCell
 from torch.distributions.categorical import Categorical
 import os
 import copy
@@ -287,7 +289,7 @@ class Decoder(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -358,7 +360,7 @@ class Decoder(torch.nn.Module):
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
 
-        return ys_log_probs, prediction, ws
+        return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
         pass
@@ -432,9 +434,9 @@ class E2E(torch.nn.Module):
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False):
         enc_h, enc_lens = self.encoder(data, ilens)
-        log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
+        logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
-        return log_probs, prediction, ws
+        return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         # add 1 to EOS
@@ -454,17 +456,18 @@ class OneScorer(torch.nn.Module):
         super(OneScorer, self).__init__()
 
         self.eos, self.pad = eos, pad
-        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
+        self.embedding = torch.nn.Linear(output_dim, embedding_dim, bias=False)
+        self.LSTMCell = MyLSTMCell(embedding_dim + att_odim, hidden_dim)
         # load decoder weight
-        self.embedding.load_state_dict(decoder.embedding.state_dict())
-        self.LSTMCell.load_state_dict(decoder.LSTMCell.state_dict())
+        self.embedding.weight.data.copy_(decoder.embedding.weight.transpose(1, 0))
+        #self.LSTMCell.load_from_LSTMCell(decoder.LSTMCell)
 
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, 1)
         self.attention = attention
 
         self.hidden_dim = hidden_dim
         self.att_odim = att_odim
+        self.output_dim = output_dim
         self.dropout_rate = dropout_rate
 
     def zero_state(self, enc_pad, dim=None):
@@ -481,22 +484,21 @@ class OneScorer(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys):
+    def forward(self, enc_pad, enc_len, ys, is_distr=False):
         batch_size = enc_pad.size(0)
 
-        # prepare sequences
-        #eos = ys[0].data.new([self.eos])
-        #ys_in = [torch.cat([y, eos], dim=0) for y in ys]
-        pad_ys_in = pad_list(ys, pad_value=self.eos)
-
-        # get length info
-        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
-        # map idx to embedding
-        eys = self.embedding(pad_ys_in)
+        if not is_distr:
+            # prepare sequences
+            pad_ys_in = pad_list(ys, pad_value=self.eos)
+            pad_ys_in_onehot = onehot(pad_ys_in, encode_dim=self.output_dim)
+            # map idx to embedding
+            eys = self.embedding(pad_ys_in_onehot)
+        else:
+            eys = self.embedding(ys)
 
         # initialization
         dec_c = self.zero_state(enc_pad)
@@ -509,6 +511,7 @@ class OneScorer(torch.nn.Module):
         self.attention.reset()
 
         # loop for each timestep
+        olength = eys.size(1)
         for t in range(olength):
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
@@ -518,7 +521,7 @@ class OneScorer(torch.nn.Module):
 
         #logits = torch.stack(logits, dim=1).squeeze(dim=2)
         #probs = torch.sigmoid(logits)
-        scores = logits.squeeze(dim=2)
+        scores = logit.squeeze(dim=1)
         ws = torch.stack(ws, dim=1)
 
         return scores, ws
@@ -557,7 +560,7 @@ class Scorer(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -602,7 +605,7 @@ class Judge(torch.nn.Module):
     def __init__(self, encoder, attention, decoder, 
             input_dim, enc_hidden_dim, enc_n_layers, subsample, dropout_rate, 
             dec_hidden_dim, att_dim, conv_channels, conv_kernel_size, att_odim, 
-            embedding_dim, output_dim, every_step=False, 
+            embedding_dim, output_dim, 
             pad=0, eos=2, shared=True):
 
         super(Judge, self).__init__()
@@ -620,35 +623,13 @@ class Judge(torch.nn.Module):
                 conv_channels=conv_channels, conv_kernel_size=conv_kernel_size, 
                 att_odim=att_odim)
         self.attention.load_state_dict(attention.state_dict())
-	if every_step:
-	    self.scorer = Scorer(decoder, self.attention, 
-		    output_dim=output_dim, embedding_dim=embedding_dim, 
-		    hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
-		    eos=eos, pad=pad)
-        else:
-            self.scorer = OneScorer(decoder, self.attention, output_dim=output_dim, embedding_dim=embedding_dim)
+        self.scorer = OneScorer(decoder, self.attention, output_dim=output_dim, embedding_dim=embedding_dim,
+                hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, eos=eos, pad=pad)
 
-    def forward(self, data, ilens, ys):
-        if self.shared:
-            with torch.no_grad():
-                enc_h, enc_lens = self.encoder(data, ilens)
-        else:
-            enc_h, enc_lens = self.encoder(data, ilens)
-        probs, ws = self.scorer(enc_h, enc_lens, ys)
-        return probs, ws
-
-    def mask_and_average(self, probs, ys):
-        seq_len = [y.size(0) for y in ys]
-        mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
-        masked_probs = probs * mask
-        # divide by total length
-        avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
-        return avg_probs, masked_probs, mask
-
-    #def mask_and_cal_loss(self, avg_probs, target):
-    #    avg_probs = self.mask(probs, ys)
-    #    loss = F.binary_cross_entropy(avg_probs, target)
-    #    return loss, avg_probs
+    def forward(self, data, ilens, ys, is_distr=False):
+        enc_h, enc_lens = self.encoder(data, ilens)
+        scores, ws = self.scorer(enc_h, enc_lens, ys, is_distr=is_distr)
+        return scores, ws, enc_h, enc_lens
 
 if __name__ == '__main__':
     # just for debugging

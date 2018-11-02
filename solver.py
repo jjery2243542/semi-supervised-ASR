@@ -1,5 +1,6 @@
 import torch 
 import torch.nn.functional as F
+import torch.autograd as autograd
 import numpy as np
 from model import E2E, Judge
 from dataloader import get_data_loader
@@ -41,28 +42,46 @@ class Solver(object):
     def save_judge(self, model_path):
         torch.save(self.judge.state_dict(), f'{model_path}.judge.ckpt')
         torch.save(self.dis_opt.state_dict(), f'{model_path}.judge.opt')
-        return 
+        return
 
-def calc_gradient_penalty(netD, real_data, fake_data):
-    alpha = torch.rand(BATCH_SIZE, 1)
-    alpha = alpha.expand(real_data.size())
-    alpha = alpha.cuda() if use_cuda else alpha
+    def pad_ys_and_distr(self, ys, distr):
+        # convert lab_ys to onehot, pad y to longest
+        max_length = max(max(y.size(0) for y in ys), distr.size(1))
+        pad_ys = pad_list(ys, pad_value=self.vocab['<EOS>'], max_length=max_length)
+        pad_ys_onehot = onehot(pad_ys, encode_dim=distr.size(-1))
 
-    interpolates = alpha * real_data + ((1 - alpha) * fake_data)
+        # pad distr
+        if distr.size(1) < pad_ys_onehot.size(1):
+            pad_length = max_length - distr.size(1) 
+            pad_vec = onehot(torch.LongTensor([self.vocab['<EOS>']]), encode_dim=distr.size(-1))
+            pad_tensor = pad_vec.expand(distr.size(0), pad_length, pad_vec.size(1))
+            distr = torch.cat([distr, pad_tensor], dim=1)
+        return pad_ys_onehot, distr
 
-    if use_cuda:
-        interpolates = interpolates.cuda()
-    interpolates = autograd.Variable(interpolates, requires_grad=True)
+    def calc_gradient_penalty(self, lab_enc, lab_enc_len, lab_ys, unlab_enc, unlab_enc_len, unlab_distr):
+        batch_size = lab_enc.size(0)
+        alpha = cc(torch.rand(batch_size))
+        # pad and make ys onehot
+        lab_ys_onehot, unlab_distr = self.pad_ys_and_distr(lab_ys, unlab_distr)
 
-    disc_interpolates = netD(interpolates)
+        # interpolate
+        interpolate_enc = interpolate_with_diff_len(lab_enc, unlab_enc, alpha)
+        interpolate_len = [max(a, b) for a, b in zip(lab_enc_len, unlab_enc_len)]
+        interpolate_y = interpolate_with_diff_len(lab_ys_onehot, unlab_distr, alpha)
 
-    gradients = autograd.grad(outputs=disc_interpolates, inputs=interpolates,
-                              grad_outputs=torch.ones(disc_interpolates.size()).cuda() if use_cuda else torch.ones(
-                                  disc_interpolates.size()),
-                              create_graph=True, retain_graph=True, only_inputs=True)[0]
+        disc_interpolates, _ = self.judge.scorer(interpolate_enc, interpolate_len, interpolate_y, is_distr=True)
 
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * LAMBDA
-    return gradient_penalty
+        gradients_x = autograd.grad(outputs=disc_interpolates, inputs=interpolate_enc, 
+                grad_outputs=cc(torch.ones(disc_interpolates.size())),
+                create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+        gradients_y = autograd.grad(outputs=disc_interpolates, inputs=interpolate_y, 
+                grad_outputs=cc(torch.ones(disc_interpolates.size())),
+                create_graph=True, retain_graph=True, only_inputs=True)[0]
+        lp_x = (F.relu((gradients_x.norm(2, dim=1) - 1)) ** 2).mean()
+        lp_y = (F.relu((gradients_y.norm(2, dim=1) - 1)) ** 2).mean()
+        lp = lp_x + lp_y
+        return lp
 
     def load_vocab(self):
         with open(self.config['vocab_path'], 'rb') as f:
@@ -76,8 +95,8 @@ def calc_gradient_penalty(netD, real_data, fake_data):
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
         if load_optimizer:
             print(f'Load optmizer from {model_path}.opt')
-            self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
-            adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+            self.opt.load_state_dict(torch.load(f'{model_path}.opt'))
+            adjust_learning_rate(self.opt, self.config['g_learning_rate'])
         return
 
     def load_judge(self, model_path, load_optmizer):
@@ -167,8 +186,10 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             eos=self.vocab['<EOS>']
             ))
         print(self.model)
-        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
+        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.9))
 
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
@@ -198,10 +219,10 @@ def calc_gradient_penalty(netD, real_data, fake_data):
         self.ema = EMA(momentum=self.config['ema_momentum'])
         if self.config['judge_share_param']:
             self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.9))
         else:
             self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.9))
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -227,7 +248,7 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             xs, ilens, ys = to_gpu(data)
 
             # calculate loss
-            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
+            _, log_probs, _ , _ = self.model(xs, ilens, ys=ys)
             loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
@@ -235,7 +256,7 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _ , prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -279,7 +300,7 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _, prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -296,16 +317,6 @@ def calc_gradient_penalty(netD, real_data, fake_data):
         print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
         return cer
 
-    def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
-        # random sample with average length
-        gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
-
-        # remove tokens after eos 
-        unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
-        unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
-        return unlab_probs, unlab_ys_hat, gen_log_probs
-
     def judge_train_one_iteration(self, 
             lab_xs, 
             lab_ilens, 
@@ -316,34 +327,26 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             neg_ilens,
             neg_ys):
 
-        unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
+
+        # get unlab distr by argmax
+        unlab_logits, _, _, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=False, 
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion))
+        unlab_distr = F.softmax(unlab_logits, dim=-1)
+
+        # using distribution as y_hat
+        unlab_scores, _, unlab_enc, unlab_enc_len = self.judge(unlab_xs, unlab_ilens, unlab_distr, is_distr=True)
+        lab_scores, _, lab_enc, lab_enc_len = self.judge(lab_xs, lab_ilens, lab_ys)
 
         # use mismatched (speech, text) for negative samples
-        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
+        neg_scores, _, _, _ = self.judge(neg_xs, neg_ilens, neg_ys)
 
-        # calculate loss and acc
-        real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_probs, _, _ = self.judge.mask_and_average(lab_probs, lab_ys)
-        real_loss = F.binary_cross_entropy(real_probs, real_labels)
-        real_correct = torch.sum((real_probs >= 0.5).float())
+        avg_lab_score = torch.mean(lab_scores)
+        avg_unlab_score = torch.mean(unlab_scores)
+        avg_neg_score = torch.mean(neg_scores)
+        w_distance = avg_lab_score - (avg_unlab_score + avg_neg_score) / 2
+        gp = self.calc_gradient_penalty(lab_enc, lab_enc_len, lab_ys, unlab_enc, unlab_enc_len, unlab_distr) 
+        loss = -w_distance + self.config['lambda_gp'] * gp
 
-        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_probs, _, _ = self.judge.mask_and_average(unlab_probs, unlab_ys_hat)
-        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
-        fake_correct = torch.sum((fake_probs < 0.5).float())
-
-        fake_labels = cc(torch.zeros(neg_probs.size(0)))
-        neg_probs, _, _ = self.judge.mask_and_average(neg_probs, neg_ys)
-        neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
-        neg_correct = torch.sum((neg_probs < 0.5).float()) 
-
-        loss = real_loss + (fake_loss + neg_loss) / 2
-        real_acc = real_correct / lab_probs.size(0)
-        fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_probs.size(0)
-        acc = (real_correct + fake_correct + neg_correct) / \
-                (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
         # calculate gradients
 
         self.dis_opt.zero_grad()
@@ -351,17 +354,11 @@ def calc_gradient_penalty(netD, real_data, fake_data):
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
 
-        meta = {'real_loss':real_loss.item(),
-                'fake_loss':fake_loss.item(),
-                'neg_loss':neg_loss.item(),
-                'real_acc':real_acc.item(),
-                'fake_acc':fake_acc.item(),
-                'neg_acc':neg_acc.item(),
-                'real_prob':torch.mean(real_probs).item(),
-                'fake_prob':torch.mean(fake_probs).item(),
-                'neg_prob':torch.mean(neg_probs).item(),
-                'loss':loss.item(),
-                'acc':acc.item()}
+        meta = {'w_distance':w_distance.item(),
+                'real_score':avg_lab_score.item(),
+                'fake_score':avg_unlab_score.item(),
+                'neg_score':avg_neg_score.item(),
+                'gradient_penalty':gp.item()}
         return meta
 
     def judge_pretrain(self):
@@ -384,15 +381,17 @@ def calc_gradient_penalty(netD, real_data, fake_data):
                     unlab_xs, unlab_ilens,
                     neg_xs, neg_ilens, neg_ys)
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-            neg_loss = meta['neg_loss']
+            w_distance = meta['w_distance']
 
-            acc = meta['acc']
+            real_score = meta['real_score']
+            fake_score = meta['fake_score']
+            neg_score = meta['neg_score']
+
+            gp = meta['gradient_penalty']
 
             print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
+                    f'w_dis: {w_distance:.3f}, real_score: {real_score:.3f}, fake_score: {fake_score:.3f}'
+                    f', neg_score: {neg_score:.3f}, gp: {gp:.2f}', end='\r')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -421,17 +420,17 @@ def calc_gradient_penalty(netD, real_data, fake_data):
                 xs = xs + gau
 
             # input the model
-            log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
+            _, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
             # mask and calculate loss
             loss = -torch.mean(log_probs)
             #loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
             # calculate gradients 
-            self.gen_opt.zero_grad()
+            self.opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-            self.gen_opt.step()
+            self.opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             # add to logger
@@ -452,7 +451,7 @@ def calc_gradient_penalty(netD, real_data, fake_data):
         tf_rate_lowerbound = self.config['tf_rate_lowerbound']
 
 	# lr scheduler
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
                 gamma=self.config['lr_gamma'])
 
@@ -509,24 +508,17 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
 
-        judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
-        # baseline: exponential average
-        running_average = self.ema(torch.mean(avg_probs))
+        unlab_logits, _, _, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=False, 
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion))
+        unlab_distr = F.softmax(unlab_logits, dim=-1)
 
-        # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        judge_scores = judge_scores * mask
-
-        # pad judge_scores to length of unlab_log_probs
-        padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
-        padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
-
-        unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
+        # using distribution as y_hat
+        unlab_scores, _, _, _ = self.judge(unlab_xs, unlab_ilens, unlab_distr, is_distr=True)
+        unsup_loss = -torch.mean(unlab_scores)
 
         # mask and calculate loss
-        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
-        sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
+        _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
+        sup_loss = -torch.mean(lab_log_probs)
         gen_loss = sup_loss + self.config['unsup_weight'] * unsup_loss
 
         # calculate gradients 
@@ -561,15 +553,17 @@ def calc_gradient_penalty(netD, real_data, fake_data):
                     unlab_xs, unlab_ilens,
                     neg_xs, neg_ilens, neg_ys)
 
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-            neg_loss = dis_meta['neg_loss']
+            w_distance = dis_meta['w_distance']
 
-            acc = dis_meta['acc']
+            real_score = dis_meta['real_score']
+            fake_score = dis_meta['fake_score']
+            neg_score = dis_meta['neg_score']
+
+            gp = dis_meta['gradient_penalty']
 
             print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
+                    f'w_dis: {w_distance:.3f}, real_score: {real_score:.3f}, fake_score: {fake_score:.3f}'
+                    f', neg_score: {neg_score:.3f}, gp: {gp:.2f}', end='\r')
 
             # add to tensorboard
             step = iteration * d_steps + d_step + 1
@@ -577,11 +571,6 @@ def calc_gradient_penalty(netD, real_data, fake_data):
             for key, val in dis_meta.items():
                 self.logger.scalar_summary(f'{tag}/ssl_judge/{key}', val, step)
         print()
-
-        # store model
-        model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
-        self.save_judge(model_path)
-
 
         # train G step of generator
         for g_step in range(g_steps):
@@ -650,6 +639,8 @@ def calc_gradient_penalty(netD, real_data, fake_data):
                     model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                     best_cer = cer
                     self.save_model(model_path)
+                    self.save_judge(model_path)
+
                     best_model = self.model.state_dict()
                     print(f'Save #{step} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                     print('-----------------')

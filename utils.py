@@ -6,11 +6,37 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 
+class MyLSTMCell(torch.nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super().__init__()
+        self.input_layer = torch.nn.Linear(input_size, hidden_size * 4)
+        self.hidden_layer = torch.nn.Linear(hidden_size, hidden_size * 4)
+        self.h = hidden_size
+
+    def forward(self, inp, hidden_tuple):
+        z_tm1, c_tm1 = hidden_tuple
+        h = self.h
+        gates = self.input_layer(inp) + self.hidden_layer(z_tm1)
+        i = F.sigmoid(gates[:, :h])
+        f = F.sigmoid(gates[:, h:2*h])
+        g = F.tanh(gates[:, 2*h:3*h])
+        o = F.sigmoid(gates[:, 3*h:])
+        c = f * c_tm1 + i * g
+        z = o * F.tanh(c)
+        return z, c
+
+    def load_from_LSTMCell(self, cell):
+        self.hidden_layer.weight.data.copy_(cell.weight_hh)
+        self.hidden_layer.bias.data.copy_(cell.bias_hh)
+        self.input_layer.weight.data.copy_(cell.weight_ih)
+        self.input_layer.bias.data.copy_(cell.bias_ih)
+        return
+
 def onehot(input_x, encode_dim=None):
     if encode_dim is None:
         encode_dim = torch.max(input_x) + 1
-    input_x = input_x.type(torch.LongTensor).unsqueeze(2)
-    return cc(torch.zeros(input_x.size(0), input_x.size(1), encode_dim).scatter_(-1, input_x, 1))
+    input_x = input_x.type(torch.LongTensor).unsqueeze(input_x.dim())
+    return cc(torch.zeros(*input_x.size()[:-1], encode_dim).scatter_(-1, input_x, 1))
 
 def sample_gumbel(size, eps=1e-20):
     u = torch.rand(size)
@@ -173,6 +199,14 @@ def pad_list(xs, pad_value=0, max_length=None):
     for i in range(batch_size):
         pad[i, :xs[i].size(0)] = xs[i]
     return pad
+
+def interpolate_with_diff_len(tensor_a, tensor_b, alpha, pad_vector=None):
+    alpha_expand = alpha.view(alpha.size(0), 1, 1)
+    max_length = max(tensor_a.size(1), tensor_b.size(1))
+    placeholder = tensor_a.new_zeros(tensor_a.size(0), max_length, tensor_a.size(2))
+    placeholder[:, :tensor_a.size(1), :] += alpha_expand * tensor_a
+    placeholder[:, :tensor_b.size(1), :] += (1 - alpha_expand) * tensor_b
+    return placeholder
 
 def _seq_mask(seq_len, max_len):
     seq_len = torch.from_numpy(np.array(seq_len))
