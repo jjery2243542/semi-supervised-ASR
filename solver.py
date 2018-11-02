@@ -74,12 +74,11 @@ class Solver(object):
         gradients_x = autograd.grad(outputs=disc_interpolates, inputs=interpolate_enc, 
                 grad_outputs=cc(torch.ones(disc_interpolates.size())),
                 create_graph=True, retain_graph=True, only_inputs=True)[0]
-
         gradients_y = autograd.grad(outputs=disc_interpolates, inputs=interpolate_y, 
                 grad_outputs=cc(torch.ones(disc_interpolates.size())),
                 create_graph=True, retain_graph=True, only_inputs=True)[0]
-        lp_x = (F.relu((gradients_x.norm(2, dim=1) - 1)) ** 2).mean()
-        lp_y = (F.relu((gradients_y.norm(2, dim=1) - 1)) ** 2).mean()
+        lp_x = (F.relu(gradients_x.view(batch_size, -1).norm(2, dim=-1) - 1) ** 2).mean()
+        lp_y = (F.relu(gradients_y.view(batch_size, -1).norm(2, dim=-1) - 1) ** 2).mean()
         lp = lp_x + lp_y
         return lp
 
