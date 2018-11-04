@@ -5,4 +5,5 @@
 - [ ] Use feature matching loss to stablize training.
 - [ ] Train the discrimiator with moving average accuracy (follow [Real-Time Adaptive Image Compression](https://arxiv.org/abs/1705.05823)).
 - [ ] Only train cell.
-- [ ] Implement approximate embedding layer. 
+- [ ] Implement approximate embedding layer.
+- [ ] One-side label smoothing.
