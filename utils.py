@@ -29,7 +29,7 @@ def gumbel_softmax(logits, temperature=1., hard=False):
     return y
 
 class EMA(nn.Module):
-    def __init__(self, momentum):
+    def __init__(self, momentum=0.9):
         super(EMA, self).__init__()
         self.momentum = momentum
         self.last_average = None

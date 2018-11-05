@@ -11,8 +11,9 @@ def _collate_fn(l):
     texts = [torch.from_numpy(np.array(text)) for _, text in l]
     return padded_features, ilens, texts
 
-def get_data_loader(dataset, batch_size, shuffle):
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, num_workers=0)
+def get_data_loader(dataset, batch_size, shuffle, drop_last):
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, 
+            num_workers=0, drop_last=drop_last)
 
 #class PartLoaderIter:
 #    def __init__(self, loader):

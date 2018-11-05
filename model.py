@@ -291,7 +291,7 @@ class Decoder(torch.nn.Module):
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -330,8 +330,12 @@ class Decoder(torch.nn.Module):
                     bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
                     emb = self.embedding(bos)
                 else:
-                    emb = self.embedding(prediction[-1])
-
+                    # using argmax
+                    if not smooth:
+                        emb = self.embedding(prediction[-1])
+                    # smooth approximation of embedding
+                    else:
+                        emb = F.softmax(logit, dim=-1) @ self.embedding
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
@@ -430,11 +434,15 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, 
+            sample=False, smooth=False, return_enc=False):
         enc_h, enc_lens = self.encoder(data, ilens)
-        log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
-        return log_probs, prediction, ws
+        logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample, smooth=smooth)
+        if not return_enc:
+            return logits, log_probs, prediction, ws
+        else:
+            return logits, log_probs, prediction, ws, enc_h, enc_lens
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         # add 1 to EOS
@@ -500,6 +508,7 @@ class AELScorer(torch.nn.Module):
         else:
             # if is_distr (batch_size, length, vocab_size), multiply the distr to embedding weight
             eys = ys @ self.embedding.weight
+            olength = ys.size(1)
 
         # initialization
         dec_c = self.zero_state(enc_pad)
@@ -517,9 +526,9 @@ class AELScorer(torch.nn.Module):
                     self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
             ws.append(w)
 
-        probs = torch.sigmoid(logit)
-        cell_out = dec_z
-        return probs, cell_out, ws
+        probs = torch.sigmoid(logit.squeeze(-1))
+        cell_outputs = dec_z
+        return probs, cell_outputs, ws
 
 class Scorer(torch.nn.Module):
     def __init__(self, decoder, attention, 
@@ -619,23 +628,27 @@ class Judge(torch.nn.Module):
                 att_odim=att_odim)
         self.attention.load_state_dict(attention.state_dict())
 
-        self.scorer = Scorer(decoder, self.attention, 
+        self.scorer = AELScorer(decoder, self.attention, 
                 output_dim=output_dim, embedding_dim=embedding_dim, 
                 hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
                 eos=eos, pad=pad)
 
-    def forward(self, data, ilens, ys):
-        enc_h, enc_lens = self.encoder(data, ilens)
-        probs, ws = self.scorer(enc_h, enc_lens, ys)
-        return probs, ws
+    def forward(self, data, ilens, ys, is_distr=False):
+        if self.shared:
+            with torch.no_grad():
+                enc_h, enc_lens = self.encoder(data, ilens)
+        else:
+            enc_h, enc_lens = self.encoder(data, ilens)
+        probs, cell_out, ws = self.scorer(enc_h, enc_lens, ys, is_distr=is_distr)
+        return probs, cell_out, ws
 
-    def mask_and_average(self, probs, ys):
-        seq_len = [y.size(0) for y in ys]
-        mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
-        masked_probs = probs * mask
-        # divide by total length
-        avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
-        return avg_probs, masked_probs, mask
+    #def mask_and_average(self, probs, ys):
+    #    seq_len = [y.size(0) for y in ys]
+    #    mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
+    #    masked_probs = probs * mask
+    #    # divide by total length
+    #    avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
+    #    return avg_probs, masked_probs, mask
 
     #def mask_and_cal_loss(self, avg_probs, target):
     #    avg_probs = self.mask(probs, ys)
