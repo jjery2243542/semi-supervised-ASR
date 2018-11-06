@@ -523,7 +523,7 @@ class Solver(object):
             # calculate feature matching loss
             lab_probs, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
             fm_loss = torch.sum((torch.mean(unlab_latent, dim=0) - torch.mean(lab_latent, dim=0)) ** 2)
-            unsup_loss = gen_loss + fm_loss
+            unsup_loss = gen_loss + self.config['fm_weight'] * fm_loss
             real_correct = torch.sum((lab_probs >= 0.5).float())
             acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
         else:
