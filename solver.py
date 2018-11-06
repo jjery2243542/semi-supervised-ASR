@@ -55,8 +55,7 @@ class Solver(object):
         self.model.load_state_dict(torch.load(f'{model_path}.ckpt'))
         if load_optimizer:
             print(f'Load optmizer from {model_path}.opt')
-            self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
-            adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+            self.opt.load_state_dict(torch.load(f'{model_path}.opt'))
         return
 
     def load_judge(self, model_path, load_optmizer):
@@ -148,8 +147,10 @@ class Solver(object):
             eos=self.vocab['<EOS>']
             ))
         print(self.model)
-        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
+        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['g_learning_rate'], 
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
 
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
@@ -179,10 +180,10 @@ class Solver(object):
         self.acc_ema = EMA(momentum=self.config['ema_momentum'])
         if self.config['judge_share_param']:
             self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
         else:
             self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -419,10 +420,10 @@ class Solver(object):
             total_loss += loss.item()
 
             # calculate gradients 
-            self.gen_opt.zero_grad()
+            self.opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-            self.gen_opt.step()
+            self.opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             # add to logger
