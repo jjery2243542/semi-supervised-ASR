@@ -49,10 +49,13 @@ epochs: 50
 judge_iterations: 1000
 ssl_iterations: 130
 judge_share_param: True
-d_steps: 500
-g_steps: 500
+d_steps: 5
+g_steps: 5
 unsup_weight: 0.05
 change_learning_rate_epoch: 100
 ema_momentum: 0.8
 smooth_embedding: False
 dis_smoothing: 0.9
+acc_upperbound: 0.95
+acc_lowerbound: 0.8
+feature_matching: True
