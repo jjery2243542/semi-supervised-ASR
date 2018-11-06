@@ -149,7 +149,8 @@ class Solver(object):
         print(self.model)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
-        self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['g_learning_rate'], 
+        self.gen_opt = torch.optim.Adam(self.model.decoder.LSTMCell.parameters(), 
+                lr=self.config['g_learning_rate'], 
                 weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
 
         if load_model:
@@ -530,17 +531,22 @@ class Solver(object):
             unsup_loss = gen_loss
             acc = fake_correct / unlab_probs.size(0)
 
+        # update LSTMCell
+        self.gen_opt.zero_grad()
+        (unsup_loss * self.config['unsup_weight']).backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
+        self.gen_opt.step()
+
         avg_acc = self.acc_ema(acc)
         # mask and calculate loss
         _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = -torch.mean(lab_log_probs)
         loss = sup_loss + self.config['unsup_weight'] * unsup_loss
-
         # calculate gradients
-        self.gen_opt.zero_grad()
-        loss.backward()
+        self.opt.zero_grad()
+        sup_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-        self.gen_opt.step()
+        self.opt.step()
 
         gen_meta = {'unsup_loss': unsup_loss.item(),
                     'sup_loss': sup_loss.item(),
