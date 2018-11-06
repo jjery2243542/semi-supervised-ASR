@@ -517,15 +517,20 @@ class Solver(object):
         # calculate loss
         real_labels = cc(torch.ones(unlab_probs.size(0)))
         gen_loss = F.binary_cross_entropy(unlab_probs, real_labels)
+        fake_correct = torch.sum((unlab_probs < 0.5).float())
         
         if self.config['feature_matching']:
             # calculate feature matching loss
-            _, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
+            lab_probs, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
             fm_loss = torch.sum((torch.mean(unlab_latent, dim=0) - torch.mean(lab_latent, dim=0)) ** 2)
             unsup_loss = gen_loss + fm_loss
+            real_correct = torch.sum((lab_probs >= 0.5).float())
+            acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
         else:
             unsup_loss = gen_loss
+            acc = fake_correct / unlab_probs.size(0)
 
+        avg_acc = self.acc_ema(acc)
         # mask and calculate loss
         _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = -torch.mean(lab_log_probs)
@@ -539,7 +544,10 @@ class Solver(object):
 
         gen_meta = {'unsup_loss': unsup_loss.item(),
                     'sup_loss': sup_loss.item(),
-                    'loss': loss.item()}
+                    'loss': loss.item(),
+                    'acc':acc.item(),
+                    'avg_acc':avg_acc.item()}
+
         if self.config['feature_matching']:
             gen_meta['fm_loss'] = fm_loss.item()
         return gen_meta
