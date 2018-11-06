@@ -335,7 +335,7 @@ class Decoder(torch.nn.Module):
                         emb = self.embedding(prediction[-1])
                     # smooth approximation of embedding
                     else:
-                        emb = F.softmax(logit, dim=-1) @ self.embedding
+                        emb = F.softmax(logit, dim=-1) @ self.embedding.weight
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
