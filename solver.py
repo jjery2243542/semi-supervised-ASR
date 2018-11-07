@@ -616,12 +616,9 @@ class Solver(object):
                 unsup_loss = gen_meta['unsup_loss']
                 sup_loss = gen_meta['sup_loss']
                 loss = gen_meta['loss']
-                acc = gen_meta['acc']
-                avg_acc = gen_meta['avg_acc']
 
                 print(f'Gen:[{g_step + 1}/{g_steps}], '
-                        f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
-                        f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
+                        f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}',
                         end='\r')
 
                 # add to tensorboard
