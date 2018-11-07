@@ -525,10 +525,9 @@ class AELScorer(torch.nn.Module):
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
             ws.append(w)
-
-        probs = torch.sigmoid(logit.squeeze(-1))
-        cell_outputs = dec_z
-        return probs, cell_outputs, ws
+        logit = logit.squeeze(-1)
+        latent = dec_z
+        return logit, latent, ws
 
 class Scorer(torch.nn.Module):
     def __init__(self, decoder, attention, 

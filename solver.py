@@ -307,32 +307,34 @@ class Solver(object):
             unlab_distr = F.softmax(unlab_logits, dim=-1)
 
         # speech have been encoded
-        unlab_probs, _, _ = self.judge.scorer(unlab_enc.detach(), unlab_enc_lens, ys=unlab_distr, is_distr=True)
+        unlab_logits, _, _ = self.judge.scorer(unlab_enc.detach(), unlab_enc_lens, ys=unlab_distr, is_distr=True)
 
-        lab_probs, _, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
+        lab_logits, _, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
         # use mismatched (speech, text) for negative samples
-        neg_probs, _, _ = self.judge(neg_xs, neg_ilens, neg_ys, is_distr=False)
+        neg_logits, _, _ = self.judge(neg_xs, neg_ilens, neg_ys, is_distr=False)
 
         # calculate loss and acc
-        # perform one-sided smoothing for discriminator
-        real_labels = cc(torch.ones(lab_probs.size(0))) * self.config['dis_smoothing']
-        real_loss = F.binary_cross_entropy(lab_probs, real_labels)
-        real_correct = torch.sum((lab_probs >= 0.5).float())
+        real_probs = F.sigmoid(lab_logits - (torch.mean(unlab_logits) + torch.mean(neg_logits)) / 2)
+        real_labels = cc(torch.ones(lab_logits.size(0)))
+        real_loss = F.binary_cross_entropy(real_probs, real_labels)
+        real_correct = torch.sum((real_probs >= 0.5).float())
 
-        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_loss = F.binary_cross_entropy(unlab_probs, fake_labels)
-        fake_correct = torch.sum((unlab_probs < 0.5).float())
+        fake_probs = F.sigmoid(unlab_logits - torch.mean(lab_logits))
+        fake_labels = cc(torch.zeros(unlab_logits.size(0)))
+        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
+        fake_correct = torch.sum((fake_probs < 0.5).float())
 
-        fake_labels = cc(torch.zeros(neg_probs.size(0)))
+        neg_probs = F.sigmoid(neg_logits - torch.mean(lab_logits))
+        fake_labels = cc(torch.zeros(neg_logits.size(0)))
         neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
         neg_correct = torch.sum((neg_probs < 0.5).float()) 
 
         loss = real_loss + (fake_loss + neg_loss) / 2
-        real_acc = real_correct / lab_probs.size(0)
-        fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_probs.size(0)
+        real_acc = real_correct / lab_logits.size(0)
+        fake_acc = fake_correct / unlab_logits.size(0)
+        neg_acc = neg_correct / neg_logits.size(0)
         acc = (real_correct + fake_correct + neg_correct) / \
-                (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
+                (real_probs.size(0) + fake_probs.size(0) + neg_probs.size(0))
         avg_acc = self.acc_ema(acc)
 
         # calculate gradients
@@ -347,8 +349,8 @@ class Solver(object):
                 'real_acc':real_acc.item(),
                 'fake_acc':fake_acc.item(),
                 'neg_acc':neg_acc.item(),
-                'real_prob':torch.mean(lab_probs).item(),
-                'fake_prob':torch.mean(unlab_probs).item(),
+                'real_prob':torch.mean(real_probs).item(),
+                'fake_prob':torch.mean(fake_probs).item(),
                 'neg_prob':torch.mean(neg_probs).item(),
                 'loss':loss.item(),
                 'acc':acc.item(),
@@ -507,30 +509,41 @@ class Solver(object):
                 ys=None, sample=False, 
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
                 smooth=self.config['smooth_embedding'], return_enc=True)
+
         # stop gradients for encoder outputs
         unlab_enc.detach_()
         unlab_distr = F.softmax(unlab_logits, dim=-1)
         # speech have been encoded
-        unlab_probs, unlab_latent, _ = self.judge.scorer(
+        unlab_logits, unlab_latent, _ = self.judge.scorer(
                 unlab_enc, unlab_enc_lens, ys=unlab_distr, is_distr=True)
+        lab_logits, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
 
-        # calculate loss
-        real_labels = cc(torch.ones(unlab_probs.size(0)))
-        gen_loss = F.binary_cross_entropy(unlab_probs, real_labels)
-        fake_correct = torch.sum((unlab_probs < 0.5).float())
+        # calculate loss and acc
+        real_probs = F.sigmoid(unlab_logits - torch.mean(lab_logits))
+        real_labels = cc(torch.ones(unlab_logits.size(0)))
+        real_loss = F.binary_cross_entropy(real_probs, real_labels)
+        real_correct = torch.sum((real_probs >= 0.5).float())
+
+        fake_probs = F.sigmoid(lab_logits - torch.mean(unlab_logits))
+        fake_labels = cc(torch.zeros(unlab_logits.size(0)))
+        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
+        fake_correct = torch.sum((fake_probs < 0.5).float())
+
+        real_acc = real_correct / lab_logits.size(0)
+        fake_acc = fake_correct / unlab_logits.size(0)
+        acc = (real_correct + fake_correct) / (unlab_logits.size(0) + lab_logits.size(0))
+
+        gen_loss = real_loss + fake_loss
         
         if self.config['feature_matching']:
             # calculate feature matching loss
-            lab_probs, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
             fm_loss = torch.sum((torch.mean(unlab_latent, dim=0) - torch.mean(lab_latent, dim=0)) ** 2)
             unsup_loss = gen_loss + self.config['fm_weight'] * fm_loss
-            real_correct = torch.sum((lab_probs >= 0.5).float())
-            acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
         else:
             unsup_loss = gen_loss
-            acc = fake_correct / unlab_probs.size(0)
 
         avg_acc = self.acc_ema(acc)
+
         # mask and calculate loss
         _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = -torch.mean(lab_log_probs)
@@ -542,7 +555,14 @@ class Solver(object):
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
         self.gen_opt.step()
 
-        gen_meta = {'unsup_loss': unsup_loss.item(),
+        gen_meta = {'real_loss':real_loss.item(),
+                    'fake_loss': fake_loss.item(),
+                    'real_prob': torch.mean(real_probs).item(),
+                    'fake_prob': torch.mean(fake_probs).item(),
+                    'real_acc': real_acc.item(),
+                    'fake_acc': fake_acc.item(),
+                    'unsup_loss': unsup_loss.item(),
+                    'gen_loss': gen_loss.item(),
                     'sup_loss': sup_loss.item(),
                     'loss': loss.item(),
                     'acc':acc.item(),
@@ -616,9 +636,12 @@ class Solver(object):
                 unsup_loss = gen_meta['unsup_loss']
                 sup_loss = gen_meta['sup_loss']
                 loss = gen_meta['loss']
+                acc = gen_meta['acc']
+                avg_acc = gen_meta['avg_acc']
 
                 print(f'Gen:[{g_step + 1}/{g_steps}], '
-                        f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}',
+                        f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
+                        f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
                         end='\r')
 
                 # add to tensorboard
