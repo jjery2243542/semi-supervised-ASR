@@ -522,12 +522,12 @@ class Solver(object):
         real_probs = F.sigmoid(unlab_logits - torch.mean(lab_logits))
         real_labels = cc(torch.ones(unlab_logits.size(0)))
         real_loss = F.binary_cross_entropy(real_probs, real_labels)
-        real_correct = torch.sum((real_probs >= 0.5).float())
+        real_correct = torch.sum((real_probs < 0.5).float())
 
         fake_probs = F.sigmoid(lab_logits - torch.mean(unlab_logits))
         fake_labels = cc(torch.zeros(unlab_logits.size(0)))
         fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
-        fake_correct = torch.sum((fake_probs < 0.5).float())
+        fake_correct = torch.sum((fake_probs >= 0.5).float())
 
         real_acc = real_correct / lab_logits.size(0)
         fake_acc = fake_correct / unlab_logits.size(0)
