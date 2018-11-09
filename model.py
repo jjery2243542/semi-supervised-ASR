@@ -468,6 +468,8 @@ class AELScorer(torch.nn.Module):
         self.embedding.load_state_dict(decoder.embedding.state_dict())
         self.LSTMCell.load_state_dict(decoder.LSTMCell.state_dict())
 
+        self.embedding.requires_grad = False
+
         self.output_layer = torch.nn.Linear(hidden_dim, 1)
         self.attention = attention
         self.attention.requires_grad = False
