@@ -337,8 +337,7 @@ class Solver(object):
         real_acc = real_correct / lab_logits.size(0)
         fake_acc = fake_correct / unlab_logits.size(0)
         neg_acc = neg_correct / neg_logits.size(0)
-        acc = (real_correct + fake_correct + neg_correct) / \
-                (real_probs.size(0) + fake_probs.size(0) + neg_probs.size(0))
+        acc = (real_acc + 0.5 * (fake_acc + neg_acc)) / 2
         avg_acc = self.acc_ema(acc)
 
         # calculate gradients
