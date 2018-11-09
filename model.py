@@ -470,6 +470,7 @@ class AELScorer(torch.nn.Module):
 
         self.output_layer = torch.nn.Linear(hidden_dim, 1)
         self.attention = attention
+        self.attention.requires_grad = False
 
         self.hidden_dim = hidden_dim
         self.att_odim = att_odim

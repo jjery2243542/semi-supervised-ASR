@@ -7,3 +7,4 @@
 - [ ] Only train cell.
 - [ ] Implement approximate embedding layer.
 - [ ] One-side label smoothing.
+- [ ] check whether discriminator learned (by devset).
