@@ -514,7 +514,7 @@ class Solver(object):
                 smooth=self.config['smooth_embedding'], return_enc=True)
 
         # stop gradients for encoder outputs
-        unlab_enc.detach_()
+        #unlab_enc.detach_()
         unlab_distr = F.softmax(unlab_logits, dim=-1)
         # speech have been encoded
         unlab_logits, unlab_latent, _ = self.judge.scorer(
