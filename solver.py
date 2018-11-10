@@ -150,7 +150,7 @@ class Solver(object):
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['g_learning_rate'], 
-                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.999))
 
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
@@ -179,11 +179,15 @@ class Solver(object):
         # exponential moving average
         self.acc_ema = EMA(momentum=self.config['ema_momentum'])
         if self.config['judge_share_param']:
-            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
+            self.dis_opt = torch.optim.Adam(
+                    filter(lambda p: p.requires_grad, self.judge.scorer.parameters()), 
+                    lr=self.config['d_learning_rate'], 
+                    weight_decay=self.config['weight_decay'], betas=(0.5, 0.999))
         else:
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
+            self.dis_opt = torch.optim.Adam(
+                    filter(lambda p: p.requires_grad, self.judge.parameters()), 
+                    lr=self.config['d_learning_rate'], 
+                    weight_decay=self.config['weight_decay'], betas=(0.5, 0.999))
         return
 
     def ind2sent(self, all_prediction, all_ys):

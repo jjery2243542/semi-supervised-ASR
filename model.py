@@ -466,10 +466,12 @@ class AELScorer(torch.nn.Module):
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
         # load decoder weight
         self.embedding.load_state_dict(decoder.embedding.state_dict())
+        self.embedding.requires_grad = False
         self.LSTMCell.load_state_dict(decoder.LSTMCell.state_dict())
 
         self.output_layer = torch.nn.Linear(hidden_dim, 1)
         self.attention = attention
+        self.attention.requires_grad = False
 
         self.hidden_dim = hidden_dim
         self.att_odim = att_odim
