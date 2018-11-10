@@ -512,7 +512,8 @@ class Solver(object):
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
                 smooth=self.config['smooth_embedding'], return_enc=True)
         # stop gradients for encoder outputs
-        unlab_enc.detach_()
+        if not self.config['train_enc']:
+            unlab_enc.detach_()
         unlab_distr = F.softmax(unlab_logits, dim=-1)
         # speech have been encoded
         unlab_probs, unlab_latent, _ = self.judge.scorer(
