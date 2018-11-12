@@ -252,7 +252,7 @@ class Solver(object):
 
         test_loader = get_data_loader(test_dataset, 
                 batch_size=1, 
-                shuffle=False)
+                shuffle=False, drop_last=False)
 
         self.model.eval()
         all_prediction, all_ys = [], []
