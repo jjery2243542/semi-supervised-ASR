@@ -455,6 +455,45 @@ class E2E(torch.nn.Module):
         loss = -torch.sum(log_probs * mask) / sum(seq_len)
         return loss
 
+# like standard LM
+class Mediator(torch.nn.Module):
+    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, bos, eos, pad):
+        super(Mediator, self).__init__()
+
+        self.bos, self.eos, self.pad = bos, eos, pad
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+        self.LSTMCell = torch.nn.LSTMCell(embedding_dim, hidden_dim)
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
+
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.dropout_rate = dropout_rate
+
+    def forward_step(self, emb, dec_z, dec_c):
+        cell_inp = F.dropout(emb, self.dropout_rate, training=self.training)
+        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+        dropped_dec_z = F.dropout(dec_z, self.dropout_rate)
+        logit = self.output_layer(dropped_dec_z)
+        return logit, dec_z, dec_c
+
+    def forward(self, ys):
+        bos, eos, pad = self.bos, self.eos, self.pad
+        ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+        ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+        pad_ys_in = pad_list(ys_in, pad_value=self.eos)
+        pad_ys_out = pad_list(ys_out, pad_value=self.eos)
+        # get length info
+        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+        # map idx to embedding
+        eys = self.embedding(pad_ys_in)
+
+        logits = []
+        for t in range(olength):
+            logit, dec_z, dec_c = self.forward_step(eys[:, t, :], dec_z, dec_c)
+            logits.append(logit)
+        logits = torch.stack(logits, dim=1)
+        return logits
+
 class AELScorer(torch.nn.Module):
     def __init__(self, decoder, attention, 
             output_dim, embedding_dim, hidden_dim, att_odim, dropout_rate, 
