@@ -289,9 +289,7 @@ class Decoder(torch.nn.Module):
         output = torch.cat([dec_z, c], dim=-1)
         output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
-        dropped_dec_z = F.dropout(dec_z, self.dropout_rate, training=self.training)
-        dropped_dec_c = F.dropout(dec_c, self.dropout_rate, training=self.training)
-        return logit, dropped_dec_z, dropped_dec_c, c, w
+        return logit, dec_z, dec_c, c, w
 
     def forward(self, enc_pad, enc_len, ys=None, 
             tf_rate=1.0, max_dec_timesteps=500, 
@@ -458,13 +456,13 @@ class E2E(torch.nn.Module):
 
 # like standard LM
 class LM(torch.nn.Module):
-    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, 
+    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, n_layers,
             bos, eos, pad, ls_weight, labeldist):
         super(LM, self).__init__()
 
         self.bos, self.eos, self.pad = bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-        self.LSTMCell = torch.nn.LSTMCell(embedding_dim, hidden_dim)
+        self.LSTMCell = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True)
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
 
         self.hidden_dim = hidden_dim
@@ -486,10 +484,8 @@ class LM(torch.nn.Module):
     def forward_step(self, emb, dec_z, dec_c):
         cell_inp = F.dropout(emb, self.dropout_rate, training=self.training)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-        dropped_dec_z = F.dropout(dec_z, self.dropout_rate, training=self.training)
-        dropped_dec_c = F.dropout(dec_c, self.dropout_rate, training=self.training)
         logit = self.output_layer(dropped_dec_z)
-        return logit, dropped_dec_z, dropped_dec_c
+        return logit, dec_z, dec_c
 
     def forward(self, ys=None, discrete_input=True, max_dec_timesteps=500, n_samples=5, sample=False):
         batch_size, olength = n_samples, max_dec_timesteps

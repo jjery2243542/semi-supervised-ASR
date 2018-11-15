@@ -160,6 +160,7 @@ class Solver(object):
                 embedding_dim=self.config['embedding_dim'],
                 hidden_dim=self.config['dis_hidden_dim'],
                 dropout_rate=self.config['dis_dropout_rate'],
+                n_layers=self.config['dis_layers'],
                 bos=self.vocab['<BOS>'],
                 eos=self.vocab['<EOS>'],
                 pad=self.vocab['<PAD>'],

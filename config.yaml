@@ -27,6 +27,7 @@ enc_n_layers: 3
 subsample: [2, 2, 2]
 dropout_rate: 0.3
 dis_dropout_rate: 0.5
+dis_layers: 2
 max_grad_norm: 5
 dec_hidden_dim: 320
 dis_hidden_dim: 640
