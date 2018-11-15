@@ -468,6 +468,7 @@ class LM(torch.nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.dropout_rate = dropout_rate
+        self.n_layers = n_layers
 
         # label smoothing hyperparameters
         self.ls_weight = ls_weight
@@ -477,12 +478,12 @@ class LM(torch.nn.Module):
 
     def zero_state(self, ref, dim=None):
         if not dim:
-            return ref.new_zeros(ref.size(0), self.hidden_dim)
+            return ref.new_zeros(self.n_layers, ref.size(0), self.hidden_dim)
         else:
-            return ref.new_zeros(ref.size(0), dim)
+            return ref.new_zeros(self.n_layers, ref.size(0), dim)
 
     def forward_step(self, emb, dec_z, dec_c):
-        cell_inp = F.dropout(emb, self.dropout_rate, training=self.training)
+        cell_inp = F.dropout(emb.unsqueeze(1), self.dropout_rate, training=self.training)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
         logit = self.output_layer(dropped_dec_z)
         return logit, dec_z, dec_c
