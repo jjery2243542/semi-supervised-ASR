@@ -482,11 +482,14 @@ class LM(torch.nn.Module):
         else:
             return ref.new_zeros(self.n_layers, ref.size(0), dim)
 
-    def forward_step(self, emb, dec_z, dec_c):
+    def forward_step(self, emb, dec_z=None, dec_c=None):
         cell_inp = F.dropout(emb.unsqueeze(1), self.dropout_rate, training=self.training)
-        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-        dropped_dec_z = F.dropout(dec_z, self.dropout, training=self.training)
-        logit = self.output_layer(dropped_dec_z)
+        if dec_z is not None:
+            _, (dec_z, dec_c) = self.LSTMCell(cell_inp, (dec_z, dec_c))
+        else:
+            _, (dec_z, dec_c) = self.LSTMCell(cell_inp)
+        dropped_dec_z = F.dropout(dec_z, self.dropout_rate, training=self.training)
+        logit = self.output_layer(dropped_dec_z[-1])
         return logit, dec_z, dec_c
 
     def forward(self, ys=None, discrete_input=True, max_dec_timesteps=500, n_samples=5, sample=False):
@@ -511,11 +514,8 @@ class LM(torch.nn.Module):
             # map idx to embedding
             eys = self.embedding(pad_ys_in)
 
-        # initialization
-        dec_c = self.zero_state(cc(torch.FloatTensor([0 for _ in range(batch_size)])))
-        dec_z = self.zero_state(cc(torch.FloatTensor([0 for _ in range(batch_size)])))
-
         logits, predictions = [], []
+        dec_c, dec_z = None, None
         for t in range(olength):
             if ys:
                 emb = eys[:, t, :]
