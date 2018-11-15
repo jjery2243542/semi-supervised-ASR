@@ -194,12 +194,20 @@ class Solver(object):
             _, _, ys = to_gpu(data)
 
             # calculate loss
-            log_probs, _ = self.judge(ys)
+            log_probs, _, _ = self.judge(ys)
             loss = self.judge.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
+
+        # random predict n_samples
+        _, _, predictions = self.judge(ys=None, n_samples=5, sample=True)
+        # remove eos and pad
+        prediction_til_eos = remove_pad_eos(predictions.cpu().numpy(), eos=self.vocab['<EOS>'])
+        # indexes to characters
+        prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
+
         self.judge.train()
         avg_loss = total_loss / total_steps
-        return avg_loss
+        return avg_loss, prediction_sents
             
     def validation(self):
 
@@ -281,7 +289,7 @@ class Solver(object):
         return cer
 
     def judge_train_one_iteration(self, unlab_ys):
-        log_probs, probs = self.judge(ys=unlab_ys, discrete_input=True)
+        log_probs, probs, _ = self.judge(ys=unlab_ys, discrete_input=True)
         loss = -torch.mean(log_probs)
         avg_prob = torch.mean(probs)
 
@@ -322,8 +330,12 @@ class Solver(object):
             print()
             # calculate average loss
             avg_train_loss = total_loss / total_steps
-            val_loss = self.lm_validation()
-            print(f'Epoch: {epoch}, train_loss={avg_train_loss:.3f}, valid_loss={val_loss:.3f}')
+            val_loss, predictions = self.lm_validation()
+            print('-----------------')
+            print(f'epoch: {epoch}, train_loss={avg_train_loss:.3f}, valid_loss={val_loss:.3f}')
+            for i, p in enumerate(predictions):
+                print(f'hyp-{i+1}: {p}')
+            print('-----------------')
 
             # add to tensorboard
             tag = self.config['tag']
@@ -331,11 +343,10 @@ class Solver(object):
 
             if val_loss < best_val_loss: 
                 # save model 
-                print('-----------------')
                 best_val_loss = val_loss
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                 self.save_judge(model_path)
-                print(f'Save #{epoch} LM, val_loss={val_loss:.3f}')
+                print(f'save #{epoch} LM, val_loss={val_loss:.3f}')
                 print('-----------------')
 
             # save model in every epoch

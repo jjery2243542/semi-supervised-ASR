@@ -294,7 +294,8 @@ class Decoder(torch.nn.Module):
         return logit, dropped_dec_z, dropped_dec_c, c, w
 
     def forward(self, enc_pad, enc_len, ys=None, 
-            tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False, scaling=3.0):
+            tf_rate=1.0, max_dec_timesteps=500, 
+            sample=False, smooth=False, scaling=3.0):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -490,44 +491,65 @@ class LM(torch.nn.Module):
         logit = self.output_layer(dropped_dec_z)
         return logit, dropped_dec_z, dropped_dec_c
 
-    def forward(self, ys, discrete_input=True):
-        bos = ys[0].data.new([self.bos])
-        eos = ys[0].data.new([self.eos])
-        if discrete_input:
-            ys_in = [torch.cat([bos, y], dim=0) for y in ys]
-            ys_out = [torch.cat([y, eos], dim=0) for y in ys]
-            pad_ys_in = pad_list(ys_in, pad_value=self.eos)
-            pad_ys_out = pad_list(ys_out, pad_value=self.eos)
-        # for generate output
-        else:
-            # add <bos> at the beginning, and drop last as input
-            bos_seq = ys.new(ys.size(0), 1).fill_(bos)
-            pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
-            pad_ys_out = ys
+    def forward(self, ys=None, discrete_input=True, max_dec_timesteps=500, n_samples=5, sample=False):
+        batch_size, olength = n_samples, max_dec_timesteps
+        if ys is not None:
+            bos = ys[0].data.new([self.bos])
+            eos = ys[0].data.new([self.eos])
+            if discrete_input:
+                ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+                ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+                pad_ys_in = pad_list(ys_in, pad_value=self.eos)
+                pad_ys_out = pad_list(ys_out, pad_value=self.eos)
+            # for generate output
+            else:
+                # add <bos> at the beginning, and drop last as input
+                bos_seq = ys.new(ys.size(0), 1).fill_(bos)
+                pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
+                pad_ys_out = ys
 
-        # get length info
-        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
-        # map idx to embedding
-        eys = self.embedding(pad_ys_in)
+            # get length info
+            batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+            # map idx to embedding
+            eys = self.embedding(pad_ys_in)
 
         # initialization
-        dec_c = self.zero_state(eys)
-        dec_z = self.zero_state(eys)
-        logits = []
+        dec_c = self.zero_state(cc(torch.FloatTensor([0 for _ in range(batch_size)])))
+        dec_z = self.zero_state(cc(torch.FloatTensor([0 for _ in range(batch_size)])))
 
+        logits, predictions = [], []
         for t in range(olength):
-            logit, dec_z, dec_c = self.forward_step(eys[:, t, :], dec_z, dec_c)
+            if ys:
+                emb = eys[:, t, :]
+            else:
+                if t == 0:
+                    bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
+                    emb = self.embedding(bos)
+                else:
+                    emb = self.embedding(predictions[-1])
+            logit, dec_z, dec_c = self.forward_step(emb, dec_z, dec_c)
             logits.append(logit)
+            if not sample:
+                predictions.append(torch.argmax(logit, dim=-1))
+            else:
+                sampled_indices = Categorical(logits=logit).sample() 
+                predictions.append(sampled_indices)
+
         logits = torch.stack(logits, dim=1)
+        predictions = torch.stack(predictions, dim=1)
         log_probs = F.log_softmax(logits, dim=2)
         probs = F.softmax(logits, dim=2)
-        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
-        ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        if ys:
+            ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+            ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        else:
+            ys_log_probs = torch.gather(log_probs, dim=2, index=predictions.unsqueeze(2)).squeeze(2)
+            ys_probs = torch.gather(probs, dim=2, index=predictions.unsqueeze(2)).squeeze(2)
         # label smoothing
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
-        return ys_log_probs, ys_probs
+        return ys_log_probs, ys_probs, predictions
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         if mask is None: 
