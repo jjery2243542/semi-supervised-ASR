@@ -476,6 +476,12 @@ class LM(torch.nn.Module):
         if labeldist is not None:
             self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
 
+    def zero_state(self, ref, dim=None):
+        if not dim:
+            return ref.new_zeros(ref.size(0), self.hidden_dim)
+        else:
+            return ref.new_zeros(ref.size(0), dim)
+
     def forward_step(self, emb, dec_z, dec_c):
         cell_inp = F.dropout(emb, self.dropout_rate, training=self.training)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
@@ -485,7 +491,8 @@ class LM(torch.nn.Module):
         return logit, dropped_dec_z, dropped_dec_c
 
     def forward(self, ys, discrete_input=True):
-        bos, eos, pad = self.bos, self.eos, self.pad
+        bos = ys[0].data.new([self.bos])
+        eos = ys[0].data.new([self.eos])
         if discrete_input:
             ys_in = [torch.cat([bos, y], dim=0) for y in ys]
             ys_out = [torch.cat([y, eos], dim=0) for y in ys]
@@ -503,12 +510,16 @@ class LM(torch.nn.Module):
         # map idx to embedding
         eys = self.embedding(pad_ys_in)
 
+        # initialization
+        dec_c = self.zero_state(eys)
+        dec_z = self.zero_state(eys)
         logits = []
+
         for t in range(olength):
             logit, dec_z, dec_c = self.forward_step(eys[:, t, :], dec_z, dec_c)
             logits.append(logit)
         logits = torch.stack(logits, dim=1)
-        log_probs = F.softmax(logits, dim=2)
+        log_probs = F.log_softmax(logits, dim=2)
         probs = F.softmax(logits, dim=2)
         ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
         ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)

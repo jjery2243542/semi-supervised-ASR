@@ -188,11 +188,18 @@ class Solver(object):
     def lm_validation(self):
         self.judge.eval()
         total_loss = 0.
+        total_steps = len(self.dev_loader)
+
         for step, data in enumerate(self.dev_loader):
             _, _, ys = to_gpu(data)
 
             # calculate loss
             log_probs, _ = self.judge(ys)
+            loss = self.judge.mask_and_cal_loss(log_probs, ys)
+            total_loss += loss.item()
+        self.judge.train()
+        avg_loss = total_loss / total_steps
+        return avg_loss
             
     def validation(self):
 
@@ -273,16 +280,6 @@ class Solver(object):
         print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
         return cer
 
-    #def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
-    #    # random sample with average length
-    #    gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-    #            max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
-
-    #    # remove tokens after eos 
-    #    unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
-    #    unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
-    #    return unlab_probs, unlab_ys_hat, gen_log_probs
-
     def judge_train_one_iteration(self, unlab_ys):
         log_probs, probs = self.judge(ys=unlab_ys, discrete_input=True)
         loss = -torch.mean(log_probs)
@@ -295,31 +292,55 @@ class Solver(object):
         self.dis_opt.step()
 
         meta = {'loss': loss.item(),
-                'prob': avg_prob.item()}
+                'avg_prob': avg_prob.item()}
+
         return meta
 
     def judge_pretrain(self):
         judge_epochs = self.config['judge_epochs']
         total_steps = len(self.train_unlab_y_loader)
-
+        best_val_loss = 100
         print('--------Judge pretraining--------')
         for epoch in range(judge_epochs):
+            total_loss = 0.
             for train_steps, data in enumerate(self.train_unlab_y_loader):
                 _, _, unlab_ys = to_gpu(data)
                 meta = self.judge_train_one_iteration(unlab_ys)
 
                 loss = meta['loss']
                 avg_prob = meta['avg_prob']
+                total_loss += loss
 
-                print(f'Epoch: {epoch}, [{train_steps}/{total_steps}], loss: {loss:.3f}, prob: {avg_prob:.3f}', 
-                        end='\r')
+                print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], '
+                      f'loss: {loss:.3f}, prob: {avg_prob:.3f}', end='\r')
 
                 # add to tensorboard
                 tag = self.config['tag']
                 for key, val in meta.items():
                     self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, 
                             epoch * total_steps + train_steps + 1)
+            print()
+            # calculate average loss
+            avg_train_loss = total_loss / total_steps
+            val_loss = self.lm_validation()
+            print(f'Epoch: {epoch}, train_loss={avg_train_loss:.3f}, valid_loss={val_loss:.3f}')
 
+            # add to tensorboard
+            tag = self.config['tag']
+            self.logger.scalar_summary(f'{tag}/supervised/val_loss', val_loss, epoch)
+
+            if val_loss < best_val_loss: 
+                # save model 
+                print('-----------------')
+                best_val_loss = val_loss
+                model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+                self.save_judge(model_path)
+                print(f'Save #{epoch} LM, val_loss={val_loss:.3f}')
+                print('-----------------')
+
+            # save model in every epoch
+            model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+            self.save_judge(f'{model_path}-{epoch:03d}')
         return 
     
     def sup_train_one_epoch(self, epoch, tf_rate):
@@ -336,7 +357,6 @@ class Solver(object):
                 gau = np.random.normal(0, self.config['gaussian_std'], (xs.size(0), xs.size(1), xs.size(2)))
                 gau = cc(torch.from_numpy(np.array(gau, dtype=np.float32)))
                 xs = xs + gau
-
             # input the model
             logits, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
             # mask and calculate loss
