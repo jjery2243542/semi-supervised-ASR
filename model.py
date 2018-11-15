@@ -485,6 +485,7 @@ class LM(torch.nn.Module):
     def forward_step(self, emb, dec_z, dec_c):
         cell_inp = F.dropout(emb.unsqueeze(1), self.dropout_rate, training=self.training)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+        dropped_dec_z = F.dropout(dec_z, self.dropout, training=self.training)
         logit = self.output_layer(dropped_dec_z)
         return logit, dec_z, dec_c
 
