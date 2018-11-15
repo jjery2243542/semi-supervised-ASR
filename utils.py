@@ -8,8 +8,8 @@ import torch.nn.init as init
 def onehot(input_x, encode_dim=None):
     if encode_dim is None:
         encode_dim = torch.max(input_x) + 1
-    input_x = input_x.type(torch.LongTensor).unsqueeze(2)
-    return cc(torch.zeros(input_x.size(0), input_x.size(1), encode_dim).scatter_(-1, input_x, 1))
+    input_x = input_x.int().unsqueeze(-1)
+    return input_x.new_zeros(*input_x.size()[:-1], encode_dim).float().scatter_(-1, input_x, 1)
 
 def sample_gumbel(size, eps=1e-20):
     u = torch.rand(size)
@@ -17,7 +17,7 @@ def sample_gumbel(size, eps=1e-20):
     return sample
 
 def gumbel_softmax_sample(logits, temperature=1.):
-    y = logits + cc(sample_gumbel(logits.size()))
+    y = logits + sample_gumbel(logits.size()).type(logits.type())
     return F.softmax(y / temperature, dim=-1)
 
 def gumbel_softmax(logits, temperature=1., hard=False):

@@ -9,7 +9,8 @@ vocab_path: /storage/feature/wsj/processed/deltatrue/vocab_dict.pkl
 non_lang_syms_path: /storage/feature/wsj/processed/deltatrue/non_lang_syms.pkl
 summary_steps: 500
 labeled_set: train_si84 #train_si84
-unlabeled_set: test_dev93 #train_si284
+unlabeled_speech_set: test_dev93 #train_si284
+unlabeled_text_set: test_dev93 #train_si284
 dev_set: test_dev93
 test_set: test_eval92
 max_feature_length: 2300
@@ -25,8 +26,10 @@ enc_hidden_dim: 320
 enc_n_layers: 3
 subsample: [2, 2, 2]
 dropout_rate: 0.3
+dis_dropout_rate: 0.5
 max_grad_norm: 5
 dec_hidden_dim: 320
+dis_hidden_dim: 640
 embedding_dim: 128
 att_dim: 320
 conv_channels: 10
@@ -46,17 +49,10 @@ g_learning_rate: 0.0001
 d_learning_rate: 0.0002
 lr_gamma: 0.2
 epochs: 50
-judge_iterations: 1000
-ssl_iterations: 130
-judge_share_param: True
-d_steps: 5
-g_steps: 5
-unsup_weight: 0.05
+judge_epochs: 40
+ssl_epochs: 100
+unsup_weight: 0.001
 change_learning_rate_epoch: 100
-ema_momentum: 0.8
-smooth_embedding: False
-dis_smoothing: 0.9
-acc_upperbound: 0.95
-acc_lowerbound: 0.8
-feature_matching: True
-fm_weight: 0.01
+smooth_embedding: True
+gumbel_temperature: 0.9
+softmax_scaling: 3

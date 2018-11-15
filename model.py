@@ -287,11 +287,14 @@ class Decoder(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
-        return logit, dec_z, dec_c, c, w
+        dropped_dec_z = F.dropout(dec_z, self.dropout_rate, training=self.training)
+        dropped_dec_c = F.dropout(dec_c, self.dropout_rate, training=self.training)
+        return logit, dropped_dec_z, dropped_dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False):
+    def forward(self, enc_pad, enc_len, ys=None, 
+            tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False, scaling=3.0):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -335,7 +338,7 @@ class Decoder(torch.nn.Module):
                         emb = self.embedding(prediction[-1])
                     # smooth approximation of embedding
                     else:
-                        emb = F.softmax(logit, dim=-1) @ self.embedding.weight
+                        emb = F.softmax(logit * scaling, dim=-1) @ self.embedding.weight
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
@@ -360,8 +363,7 @@ class Decoder(torch.nn.Module):
         # label smoothing
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
-            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
-
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
         return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
@@ -434,15 +436,13 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, 
-            sample=False, smooth=False, return_enc=False):
+    def forward(self, data, ilens, ys=None, 
+            tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=3.0):
         enc_h, enc_lens = self.encoder(data, ilens)
         logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample, smooth=smooth)
-        if not return_enc:
-            return logits, log_probs, prediction, ws
-        else:
-            return logits, log_probs, prediction, ws, enc_h, enc_lens
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, 
+                sample=sample, smooth=smooth, scaling=scaling)
+        return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         # add 1 to EOS
@@ -456,9 +456,10 @@ class E2E(torch.nn.Module):
         return loss
 
 # like standard LM
-class Mediator(torch.nn.Module):
-    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, bos, eos, pad):
-        super(Mediator, self).__init__()
+class LM(torch.nn.Module):
+    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, 
+            bos, eos, pad, ls_weight, labeldist):
+        super(LM, self).__init__()
 
         self.bos, self.eos, self.pad = bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
@@ -469,19 +470,34 @@ class Mediator(torch.nn.Module):
         self.output_dim = output_dim
         self.dropout_rate = dropout_rate
 
+        # label smoothing hyperparameters
+        self.ls_weight = ls_weight
+        self.labeldist = labeldist
+        if labeldist is not None:
+            self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
+
     def forward_step(self, emb, dec_z, dec_c):
         cell_inp = F.dropout(emb, self.dropout_rate, training=self.training)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
-        dropped_dec_z = F.dropout(dec_z, self.dropout_rate)
+        dropped_dec_z = F.dropout(dec_z, self.dropout_rate, training=self.training)
+        dropped_dec_c = F.dropout(dec_c, self.dropout_rate, training=self.training)
         logit = self.output_layer(dropped_dec_z)
-        return logit, dec_z, dec_c
+        return logit, dropped_dec_z, dropped_dec_c
 
-    def forward(self, ys):
+    def forward(self, ys, discrete_input=True):
         bos, eos, pad = self.bos, self.eos, self.pad
-        ys_in = [torch.cat([bos, y], dim=0) for y in ys]
-        ys_out = [torch.cat([y, eos], dim=0) for y in ys]
-        pad_ys_in = pad_list(ys_in, pad_value=self.eos)
-        pad_ys_out = pad_list(ys_out, pad_value=self.eos)
+        if discrete_input:
+            ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+            ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+            pad_ys_in = pad_list(ys_in, pad_value=self.eos)
+            pad_ys_out = pad_list(ys_out, pad_value=self.eos)
+        # for generate output
+        else:
+            # add <bos> at the beginning, and drop last as input
+            bos_seq = ys.new(ys.size(0), 1).fill_(bos)
+            pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
+            pad_ys_out = ys
+
         # get length info
         batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
         # map idx to embedding
@@ -492,8 +508,27 @@ class Mediator(torch.nn.Module):
             logit, dec_z, dec_c = self.forward_step(eys[:, t, :], dec_z, dec_c)
             logits.append(logit)
         logits = torch.stack(logits, dim=1)
-        return logits
+        log_probs = F.softmax(logits, dim=2)
+        probs = F.softmax(logits, dim=2)
+        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        # label smoothing
+        if self.ls_weight > 0:
+            loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
+        return ys_log_probs, ys_probs
 
+    def mask_and_cal_loss(self, log_probs, ys, mask=None):
+        if mask is None: 
+            seq_len = [y.size(0) + 1 for y in ys]
+            mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
+        else:
+            seq_len = [y.size(0) for y in ys]
+        # divide by total length
+        loss = -torch.sum(log_probs * mask) / sum(seq_len)
+        return loss
+
+'''
 class AELScorer(torch.nn.Module):
     def __init__(self, decoder, attention, 
             output_dim, embedding_dim, hidden_dim, att_odim, dropout_rate, 
@@ -605,7 +640,7 @@ class Scorer(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -695,6 +730,7 @@ class Judge(torch.nn.Module):
     #    avg_probs = self.mask(probs, ys)
     #    loss = F.binary_cross_entropy(avg_probs, target)
     #    return loss, avg_probs
+'''
 
 if __name__ == '__main__':
     # just for debugging
