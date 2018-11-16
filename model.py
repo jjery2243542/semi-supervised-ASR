@@ -487,8 +487,8 @@ class LM(torch.nn.Module):
         bos = ys[0].data.new([self.bos])
         eos = ys[0].data.new([self.eos])
         if discrete_input:
-            ys_in = [torch.cat([bos, y], dim=0) for y in ys]
-            ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+            ys_in = [torch.cat([bos, y, eos, eos, eos, eos], dim=0) for y in ys]
+            ys_out = [torch.cat([y, eos, eos, eos, eos, eos], dim=0) for y in ys]
             pad_ys_in = pad_sequence(ys_in, batch_first=True, padding_value=self.eos) 
             pad_ys_out = pad_sequence(ys_out, batch_first=True, padding_value=self.eos)
         # for generate output
@@ -506,7 +506,7 @@ class LM(torch.nn.Module):
 
         # using pack to speedup
         if discrete_input:
-            ilens = [y.size(0) for y in ys_in]
+            ilens = [y.size(0) + 1 + 4 for y in ys_in]
             packed_dropped_eys = pack_padded_sequence(dropped_eys, ilens, batch_first=True)
             output, (_, _) = self.LSTM(packed_dropped_eys)
             output, _ = pad_packed_sequence(output, batch_first=True)
@@ -559,7 +559,7 @@ class LM(torch.nn.Module):
 
     def mask_and_cal_sum(self, log_probs, ys, mask=None):
         if mask is None: 
-            seq_len = [y.size(0) + 1 for y in ys]
+            seq_len = [y.size(0) + 1 + 4 for y in ys]
             mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
         else:
             seq_len = [y.size(0) for y in ys]
