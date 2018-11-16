@@ -193,14 +193,14 @@ class Solver(object):
 
         for step, data in enumerate(self.dev_loader):
             _, _, ys = to_gpu(data)
-
+            ys.sort(key=lambda x: len(x), reverse=True)
             # calculate loss
             log_probs, _, _ = self.judge(ys)
-            loss = self.judge.mask_and_cal_loss(log_probs, ys)
+            loss = -self.judge.mask_and_cal_sum(log_probs, ys)
             total_loss += loss.item()
 
         # random predict n_samples
-        _, _, predictions = self.judge(ys=None, n_samples=5, sample=True)
+        predictions = self.judge.decode(n_samples=5, sample=True)
         # remove eos and pad
         prediction_til_eos = remove_pad_eos(predictions.cpu().numpy(), eos=self.vocab['<EOS>'])
         # indexes to characters

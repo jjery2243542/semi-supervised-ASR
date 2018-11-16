@@ -462,7 +462,7 @@ class LM(torch.nn.Module):
 
         self.bos, self.eos, self.pad = bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
-        self.LSTMCell = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True, 
+        self.LSTM = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True, 
                 dropout=dropout_rate if n_layers > 1 else 0)
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
 
@@ -483,49 +483,68 @@ class LM(torch.nn.Module):
         else:
             return ref.new_zeros(self.n_layers, ref.size(0), dim)
 
-    def forward_step(self, emb, dec_z=None, dec_c=None):
-        cell_inp = F.dropout(emb.unsqueeze(1), self.dropout_rate, training=self.training)
-        if dec_z is not None:
-            output, (dec_z, dec_c) = self.LSTMCell(cell_inp, (dec_z, dec_c))
+    def forward(self, ys=None, discrete_input=True):
+        bos = ys[0].data.new([self.bos])
+        eos = ys[0].data.new([self.eos])
+        if discrete_input:
+            ys_in = [torch.cat([bos, y], dim=0) for y in ys]
+            ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+            pad_ys_in = pad_sequence(ys_in, batch_first=True, padding_value=self.eos) 
+            pad_ys_out = pad_sequence(ys_out, batch_first=True, padding_value=self.eos)
+        # for generate output
         else:
-            output, (dec_z, dec_c) = self.LSTMCell(cell_inp)
+            # add <bos> at the beginning, and drop last as input
+            bos_seq = ys.new(ys.size(0), 1).fill_(bos)
+            pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
+            pad_ys_out = ys
+
+        # get length info
+        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+        # map idx to embedding
+        eys = self.embedding(pad_ys_in)
+        dropped_eys = F.dropout(eys, self.dropout_rate, training=self.training)
+
+        # using pack to speedup
+        if discrete_input:
+            ilens = [y.size(0) for y in ys_in]
+            packed_dropped_eys = pack_padded_sequence(dropped_eys, ilens, batch_first=True)
+            output, (_, _) = self.LSTM(packed_dropped_eys)
+            output, _ = pad_packed_sequence(output, batch_first=True)
+        else:
+            output, (_, _) = self.LSTM(dropped_eys)
+
         dropped_output = F.dropout(output, self.dropout_rate, training=self.training).squeeze(1)
-        logit = self.output_layer(dropped_output)
+        logits = self.output_layer(dropped_output)
+        log_probs = F.log_softmax(logits, dim=2)
+        probs = F.softmax(logits, dim=2)
+        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        # label smoothing
+        if self.ls_weight > 0:
+            loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
+        predictions = torch.argmax(logits, dim=-1)
+        return ys_log_probs, ys_probs, predictions
+
+    # only use in decode stage
+    def forward_step(self, emb, dec_z=None, dec_c=None):
+        if dec_z is not None:
+            output, (dec_z, dec_c) = self.LSTM(emb, (dec_z, dec_c))
+        else:
+            output, (dec_z, dec_c) = self.LSTM(emb)
+        output.squeeze_(1)
+        logit = self.output_layer(output)
         return logit, dec_z, dec_c
 
-    def forward(self, ys=None, discrete_input=True, max_dec_timesteps=500, n_samples=5, sample=False):
-        batch_size, olength = n_samples, max_dec_timesteps
-        if ys is not None:
-            bos = ys[0].data.new([self.bos])
-            eos = ys[0].data.new([self.eos])
-            if discrete_input:
-                ys_in = [torch.cat([bos, y], dim=0) for y in ys]
-                ys_out = [torch.cat([y, eos], dim=0) for y in ys]
-                pad_ys_in = pad_list(ys_in, pad_value=self.eos)
-                pad_ys_out = pad_list(ys_out, pad_value=self.eos)
-            # for generate output
-            else:
-                # add <bos> at the beginning, and drop last as input
-                bos_seq = ys.new(ys.size(0), 1).fill_(bos)
-                pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
-                pad_ys_out = ys
-
-            # get length info
-            batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
-            # map idx to embedding
-            eys = self.embedding(pad_ys_in)
-
+    def decode(self, n_samples=5, sample=False, max_dec_timesteps=500):
         logits, predictions = [], []
         dec_c, dec_z = None, None
-        for t in range(olength):
-            if ys:
-                emb = eys[:, t, :]
+        for t in range(max_dec_timesteps):
+            if t == 0:
+                bos = cc(torch.Tensor([self.bos for _ in range(n_samples)]).type(torch.LongTensor))
+                emb = self.embedding(bos).unsqueeze(1)
             else:
-                if t == 0:
-                    bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
-                    emb = self.embedding(bos)
-                else:
-                    emb = self.embedding(predictions[-1])
+                emb = self.embedding(predictions[-1]).unsqueeze(1)
             logit, dec_z, dec_c = self.forward_step(emb, dec_z, dec_c)
             logits.append(logit)
             if not sample:
@@ -536,28 +555,16 @@ class LM(torch.nn.Module):
 
         logits = torch.stack(logits, dim=1)
         predictions = torch.stack(predictions, dim=1)
-        log_probs = F.log_softmax(logits, dim=2)
-        probs = F.softmax(logits, dim=2)
-        if ys:
-            ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
-            ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
-        else:
-            ys_log_probs = torch.gather(log_probs, dim=2, index=predictions.unsqueeze(2)).squeeze(2)
-            ys_probs = torch.gather(probs, dim=2, index=predictions.unsqueeze(2)).squeeze(2)
-        # label smoothing
-        if self.ls_weight > 0:
-            loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
-            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
-        return ys_log_probs, ys_probs, predictions
+        return predictions
 
-    def mask_and_cal_loss(self, log_probs, ys, mask=None):
+    def mask_and_cal_sum(self, log_probs, ys, mask=None):
         if mask is None: 
             seq_len = [y.size(0) + 1 for y in ys]
             mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
         else:
             seq_len = [y.size(0) for y in ys]
         # divide by total length
-        loss = -torch.sum(log_probs * mask) / sum(seq_len)
+        loss = torch.sum(log_probs * mask) / sum(seq_len)
         return loss
 
 '''
