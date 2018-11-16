@@ -11,9 +11,28 @@ def _collate_fn(l):
     texts = [torch.from_numpy(np.array(text)) for _, text in l]
     return padded_features, ilens, texts
 
-def get_data_loader(dataset, batch_size, shuffle, drop_last):
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, 
-            num_workers=0, drop_last=drop_last)
+def _text_collate_fn(l):
+    l.sort(key=lambda x: len(x[1]), reverse=True)
+    texts = [torch.from_numpy(np.array(text)) for _, text in l]
+    return texts
+
+def _speech_collate_fn(l):
+    l.sort(key=lambda x: x[0].shape[0], reverse=True)
+    features = [torch.from_numpy(feature) for feature, _ in l]
+    padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0)
+    ilens = [feature.shape[0] for feature, _ in l]
+    return padded_features, ilens
+
+def get_data_loader(dataset, batch_size, shuffle, drop_last, speech_only=False, text_only=False):
+    if (not speech_only) and (not text_only):
+        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_collate_fn, 
+                num_workers=0, drop_last=drop_last)
+    elif speech_only:
+        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_speech_collate_fn, 
+                num_workers=0, drop_last=drop_last)
+    elif text_only:
+        return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=_text_collate_fn, 
+                num_workers=0, drop_last=drop_last)
 
 #class PartLoaderIter:
 #    def __init__(self, loader):
