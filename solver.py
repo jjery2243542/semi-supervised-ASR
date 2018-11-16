@@ -102,7 +102,7 @@ class Solver(object):
         self.train_unlab_x_loader = get_data_loader(self.train_unlab_x_dataset, 
                 batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'],
-                drop_last=True)
+                drop_last=True, speech_only=True)
         unlabeled_y_set = self.config['unlabeled_text_set']
         self.train_unlab_y_dataset = PickleDataset(
                 os.path.join(root_dir, f'{unlabeled_y_set}.pkl'), 
@@ -110,7 +110,7 @@ class Solver(object):
         self.train_unlab_y_loader = get_data_loader(self.train_unlab_y_dataset, 
                 batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'],
-                drop_last=True)
+                drop_last=True, text_only=True)
 
         # get dev dataset
         dev_set = self.config['dev_set']
@@ -175,7 +175,7 @@ class Solver(object):
 
     def ind2sent(self, all_prediction, all_ys):
         # remove eos and pad
-        prediction_til_eos = remove_pad_eos_batch(all_prediction, eos=self.vocab['<EOS>'])
+        prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
         #prediction_til_eos = all_prediction
 
         # indexes to characters
@@ -291,8 +291,8 @@ class Solver(object):
 
     def judge_train_one_iteration(self, unlab_ys):
         log_probs, probs, _ = self.judge(ys=unlab_ys, discrete_input=True)
-        loss = -torch.mean(log_probs)
-        avg_prob = torch.mean(probs)
+        loss = -self.judge.mask_and_cal_sum(log_probs, ys=unlab_ys, mask=None)
+        avg_prob = self.judge.mask_and_cal_sum(probs, ys=unlab_ys, mask=None)
 
         # calculate gradients
         self.dis_opt.zero_grad()
@@ -313,7 +313,7 @@ class Solver(object):
         for epoch in range(judge_epochs):
             total_loss = 0.
             for train_steps, data in enumerate(self.train_unlab_y_loader):
-                _, _, unlab_ys = to_gpu(data)
+                unlab_ys = [cc(y) for y in data]
                 meta = self.judge_train_one_iteration(unlab_ys)
 
                 loss = meta['loss']
