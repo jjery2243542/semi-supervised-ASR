@@ -503,10 +503,9 @@ class LM(torch.nn.Module):
         # map idx to embedding
         eys = self.embedding(pad_ys_in)
         dropped_eys = F.dropout(eys, self.dropout_rate, training=self.training)
-
         # using pack to speedup
         if discrete_input:
-            ilens = [y.size(0) + 1 + 4 for y in ys_in]
+            ilens = [y.size(0) for y in ys_in]
             packed_dropped_eys = pack_padded_sequence(dropped_eys, ilens, batch_first=True)
             output, (_, _) = self.LSTM(packed_dropped_eys)
             output, _ = pad_packed_sequence(output, batch_first=True)
