@@ -32,6 +32,7 @@ max_grad_norm: 5
 dec_hidden_dim: 320
 dis_hidden_dim: 640
 embedding_dim: 128
+dis_embedding_dim: 256
 att_dim: 320
 conv_channels: 10
 conv_kernel_size: 100

@@ -157,7 +157,7 @@ class Solver(object):
 
         self.judge = cc(LM(
                 output_dim=len(self.vocab),
-                embedding_dim=self.config['embedding_dim'],
+                embedding_dim=self.config['dis_embedding_dim'],
                 hidden_dim=self.config['dis_hidden_dim'],
                 dropout_rate=self.config['dis_dropout_rate'],
                 n_layers=self.config['dis_layers'],
