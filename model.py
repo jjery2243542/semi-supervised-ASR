@@ -66,6 +66,10 @@ class pBLSTM(torch.nn.Module):
 
             layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1,
                 bidirectional=True, batch_first=True))
+
+            # re-init to orthogonal
+            weight_init(layers[-1])
+
             project_layers.append(torch.nn.Linear(project_dim, hidden_dim))
         self.layers = torch.nn.ModuleList(layers)
         self.project_layers = torch.nn.ModuleList(project_layers)
@@ -259,6 +263,10 @@ class Decoder(torch.nn.Module):
         # 3 is bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
+
+        # re-init to orthogonal
+        weight_init(self.LSTMCell)
+
         # 3 is bos, eos, pad
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
         self.attention = attention
@@ -464,6 +472,10 @@ class LM(torch.nn.Module):
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTM = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True, 
                 dropout=dropout_rate if n_layers > 1 else 0)
+
+        # re-init to orthogonal
+        weight_init(self.LSTM)
+
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
 
         self.hidden_dim = hidden_dim
