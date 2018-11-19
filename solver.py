@@ -268,9 +268,6 @@ class Solver(object):
 
             xs, ilens, ys = to_gpu(data)
 
-            # max length in ys
-            max_dec_timesteps = max([y.size(0) for y in ys])
-
             # feed previous
             _, _ , prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
@@ -302,7 +299,6 @@ class Solver(object):
 
         meta = {'loss': loss.item(),
                 'avg_prob': avg_prob.item()}
-
         return meta
 
     def judge_pretrain(self):
@@ -328,19 +324,20 @@ class Solver(object):
                 for key, val in meta.items():
                     self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, 
                             epoch * total_steps + train_steps + 1)
-            print()
+
             # calculate average loss
             avg_train_loss = total_loss / total_steps
             val_loss, predictions = self.lm_validation()
-            print('-----------------')
             print(f'epoch: {epoch}, train_loss={avg_train_loss:.3f}, valid_loss={val_loss:.3f}')
+            print('-----------------')
             for i, p in enumerate(predictions):
                 print(f'hyp-{i+1}: {p}')
             print('-----------------')
 
             # add to tensorboard
             tag = self.config['tag']
-            self.logger.scalar_summary(f'{tag}/supervised/val_loss', val_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/judge_pretrain/val_loss', val_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/judge_pretrain/avg_train_loss', avg_train_loss, epoch)
 
             if val_loss < best_val_loss: 
                 # save model 
@@ -429,6 +426,7 @@ class Solver(object):
             tag = self.config['tag']
             self.logger.scalar_summary(f'{tag}/supervised/cer', cer, epoch)
             self.logger.scalar_summary(f'{tag}/supervised/val_loss', avg_valid_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/supervised/avg_train_loss', avg_train_loss, epoch)
 
             # only add first n samples
             lead_n = 5
