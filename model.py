@@ -467,6 +467,9 @@ class LM(torch.nn.Module):
         self.LSTM = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True, 
                 dropout=dropout_rate if n_layers > 1 else 0)
 
+        # re-init
+        weight_init(self.LSTM)
+
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
 
         self.hidden_dim = hidden_dim
