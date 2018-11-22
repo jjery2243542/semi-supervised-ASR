@@ -129,6 +129,9 @@ class Solver(object):
         return
 
     def build_model(self, load_model=False):
+        labeldist = self.labeldist
+        ls_weight = self.config['ls_weight']
+
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
             enc_n_layers=self.config['enc_n_layers'],
@@ -141,8 +144,8 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
-            ls_weight=self.config['ls_weight'],
-            labeldist=self.labeldist,
+            ls_weight=ls_weight,
+            labeldist=labeldist,
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
@@ -406,7 +409,7 @@ class Solver(object):
 
         for epoch in range(self.config['epochs']):
             # schedule
-            scheduler.step()
+            #scheduler.step()
             # calculate tf rate
             if epoch <= tf_decay_epochs:
                 tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
