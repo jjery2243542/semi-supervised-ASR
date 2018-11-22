@@ -398,7 +398,7 @@ class Solver(object):
         tf_rate_lowerbound = self.config['tf_rate_lowerbound']
 
 	# lr scheduler
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.opt, 
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
                 milestones=[self.config['change_learning_rate_epoch']],
                 gamma=self.config['lr_gamma'])
 

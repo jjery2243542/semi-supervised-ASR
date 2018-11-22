@@ -364,7 +364,7 @@ class Decoder(torch.nn.Module):
         # label smoothing
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
-            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
         return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
