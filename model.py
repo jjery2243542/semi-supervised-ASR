@@ -291,9 +291,7 @@ class Decoder(torch.nn.Module):
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, 
-            tf_rate=1.0, max_dec_timesteps=500, 
-            sample=False, smooth=False, scaling=3.0):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False, scaling=1.0):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -436,11 +434,10 @@ class E2E(torch.nn.Module):
                 pad=pad)
 
     def forward(self, data, ilens, ys=None, 
-            tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=3.0):
+            tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=1.0):
         enc_h, enc_lens = self.encoder(data, ilens)
         logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, 
-                sample=sample, smooth=smooth, scaling=scaling)
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample, smooth=smooth, scaling=scaling)
         return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):

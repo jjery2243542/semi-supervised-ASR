@@ -369,8 +369,7 @@ class Solver(object):
                 gau = cc(torch.from_numpy(np.array(gau, dtype=np.float32)))
                 xs = xs + gau
             # input the model
-            logits, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, 
-                    sample=False, smooth=False)
+            logits, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
             # mask and calculate loss
             loss = -torch.mean(log_probs)
             #loss = self.model.mask_and_cal_loss(log_probs, ys)
