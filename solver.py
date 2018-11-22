@@ -94,13 +94,13 @@ class Solver(object):
                 drop_last=True)
 
         # get unlabeled dataset
-        unlabeled_set = self.config['unlabeled_set']
-        self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
-            config=self.config, sort=True)
-        self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
-                batch_size=self.config['batch_size'], 
-                shuffle=self.config['shuffle'],
-                drop_last=True)
+        #unlabeled_set = self.config['unlabeled_set']
+        #self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
+        #    config=self.config, sort=True)
+        #self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
+        #        batch_size=self.config['batch_size'], 
+        #        shuffle=self.config['shuffle'],
+        #        drop_last=True)
 
         # get dev dataset
         dev_set = self.config['dev_set']
@@ -110,11 +110,11 @@ class Solver(object):
                 batch_size=self.config['batch_size'] // 2, 
                 shuffle=False, drop_last=False)
 
-        # get negative sample dataloader for judge training
-        self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
-                config=self.config, sort=True)
-        self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
-                shuffle=True, drop_last=True)
+        ## get negative sample dataloader for judge training
+        #self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
+        #        config=self.config, sort=True)
+        #self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
+        #        shuffle=True, drop_last=True)
         return
 
     def get_infinite_iter(self):
@@ -155,35 +155,35 @@ class Solver(object):
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
-        self.judge = cc(
-                Judge(encoder=self.model.encoder, 
-                    attention=self.model.attention,
-                    decoder=self.model.decoder, 
-                    input_dim=self.config['input_dim'],
-                    enc_hidden_dim=self.config['enc_hidden_dim'],
-                    enc_n_layers=self.config['enc_n_layers'],
-                    subsample=self.config['subsample'],
-                    dropout_rate=self.config['dropout_rate'],
-                    dec_hidden_dim=self.config['dec_hidden_dim'],
-                    att_dim=self.config['att_dim'],
-                    conv_channels=self.config['conv_channels'],
-                    conv_kernel_size=self.config['conv_kernel_size'],
-                    att_odim=self.config['att_odim'],
-                    embedding_dim=self.config['embedding_dim'],
-                    output_dim=len(self.vocab),
-                    pad=self.vocab['<PAD>'],
-                    eos=self.vocab['<EOS>'],
-                    shared=self.config['judge_share_param']
-                    ))
-        print(self.judge)
-        # exponential moving average
-        self.acc_ema = EMA(momentum=self.config['ema_momentum'])
-        if self.config['judge_share_param']:
-            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
-        else:
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
+        #self.judge = cc(
+        #        Judge(encoder=self.model.encoder, 
+        #            attention=self.model.attention,
+        #            decoder=self.model.decoder, 
+        #            input_dim=self.config['input_dim'],
+        #            enc_hidden_dim=self.config['enc_hidden_dim'],
+        #            enc_n_layers=self.config['enc_n_layers'],
+        #            subsample=self.config['subsample'],
+        #            dropout_rate=self.config['dropout_rate'],
+        #            dec_hidden_dim=self.config['dec_hidden_dim'],
+        #            att_dim=self.config['att_dim'],
+        #            conv_channels=self.config['conv_channels'],
+        #            conv_kernel_size=self.config['conv_kernel_size'],
+        #            att_odim=self.config['att_odim'],
+        #            embedding_dim=self.config['embedding_dim'],
+        #            output_dim=len(self.vocab),
+        #            pad=self.vocab['<PAD>'],
+        #            eos=self.vocab['<EOS>'],
+        #            shared=self.config['judge_share_param']
+        #            ))
+        #print(self.judge)
+        ## exponential moving average
+        #self.acc_ema = EMA(momentum=self.config['ema_momentum'])
+        #if self.config['judge_share_param']:
+        #    self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
+        #        weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
+        #else:
+        #    self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
+        #        weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
         return
 
     def ind2sent(self, all_prediction, all_ys):
@@ -248,7 +248,7 @@ class Solver(object):
 
         test_loader = get_data_loader(test_dataset, 
                 batch_size=1, 
-                shuffle=False)
+                shuffle=False, drop_last=False)
 
         self.model.eval()
         all_prediction, all_ys = [], []
