@@ -70,8 +70,8 @@ class pBLSTM(torch.nn.Module):
             project_layers.append(torch.nn.Linear(project_dim, hidden_dim))
         self.layers = torch.nn.ModuleList(layers)
         self.project_layers = torch.nn.ModuleList(project_layers)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.subsample = subsample
-        self.dropout_rate = dropout_rate
 
     def forward(self, xpad, ilens):
         for i, (layer, project_layer) in enumerate(zip(self.layers, self.project_layers)):
@@ -92,7 +92,7 @@ class pBLSTM(torch.nn.Module):
                 ilens = [(length + 1) // sub for length in ilens]
             projected = project_layer(ys_pad)
             xpad = F.relu(projected)
-            xpad = F.dropout(xpad, self.dropout_rate, training=self.training)
+            xpad = self.dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
         return xpad, ilens
@@ -260,6 +260,7 @@ class Decoder(torch.nn.Module):
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.attention = attention
 
         self.hidden_dim = hidden_dim
@@ -280,13 +281,13 @@ class Decoder(torch.nn.Module):
 
     def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
         cell_inp = torch.cat([emb, c], dim=-1)
-        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
+        cell_inp = self.dropout_layer(cell_inp)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
 
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate, training=self.training)
+        output = self.dropout_layer(output)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -465,6 +466,7 @@ class LM(torch.nn.Module):
                 dropout=dropout_rate if n_layers > 1 else 0)
 
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
 
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
@@ -502,18 +504,18 @@ class LM(torch.nn.Module):
         batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
         # map idx to embedding
         eys = self.embedding(pad_ys_in)
-        dropped_eys = F.dropout(eys, self.dropout_rate, training=self.training)
+        eys = self.dropout_layer(eys)
         # using pack to speedup
         if discrete_input:
             ilens = [y.size(0) for y in ys_in]
-            packed_dropped_eys = pack_padded_sequence(dropped_eys, ilens, batch_first=True)
-            output, (_, _) = self.LSTM(packed_dropped_eys)
+            packed_eys = pack_padded_sequence(eys, ilens, batch_first=True)
+            output, (_, _) = self.LSTM(packed_eys)
             output, _ = pad_packed_sequence(output, batch_first=True)
         else:
-            output, (_, _) = self.LSTM(dropped_eys)
+            output, (_, _) = self.LSTM(eys)
 
-        dropped_output = F.dropout(output, self.dropout_rate, training=self.training).squeeze(1)
-        logits = self.output_layer(dropped_output)
+        output = self.dropout_layer(output).squeeze(1)
+        logits = self.output_layer(output)
         log_probs = F.log_softmax(logits, dim=2)
         probs = F.softmax(logits, dim=2)
         ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)

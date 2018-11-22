@@ -36,7 +36,7 @@ class Solver(object):
 
     def save_model(self, model_path):
         torch.save(self.model.state_dict(), f'{model_path}.ckpt')
-        torch.save(self.opt.state_dict(), f'{model_path}.opt')
+        torch.save(self.gen_opt.state_dict(), f'{model_path}.opt')
         return
 
     def save_judge(self, model_path):
@@ -154,7 +154,7 @@ class Solver(object):
         self.opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['g_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], betas=(0.5, 0.99))
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
@@ -409,7 +409,7 @@ class Solver(object):
 
         for epoch in range(self.config['epochs']):
             # schedule
-            #scheduler.step()
+            scheduler.step()
             # calculate tf rate
             if epoch <= tf_decay_epochs:
                 tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
