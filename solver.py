@@ -129,6 +129,9 @@ class Solver(object):
         return
 
     def build_model(self, load_model=False):
+        labeldist = self.labeldist
+        ls_weight = self.config['ls_weight']
+
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
             enc_n_layers=self.config['enc_n_layers'],
@@ -141,8 +144,8 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
-            ls_weight=self.config['ls_weight'],
-            labeldist=self.labeldist,
+            ls_weight=ls_weight,
+            labeldist=labeldist,
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
@@ -176,7 +179,6 @@ class Solver(object):
     def ind2sent(self, all_prediction, all_ys):
         # remove eos and pad
         prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
-        #prediction_til_eos = all_prediction
 
         # indexes to characters
         prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
@@ -456,12 +458,12 @@ class Solver(object):
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
 
-        unlab_logits, unlab_log_probs, unlab_prediction, _, unlab_enc, unlab_enc_lens = self.model(
+        unlab_logits, unlab_log_probs, unlab_prediction, _ = self.model(
                 unlab_xs, 
                 unlab_ilens, 
                 ys=None, sample=False, 
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
-                smooth=self.config['smooth_embedding'], return_enc=True)
+                smooth=self.config['smooth_embedding'])
         # stop gradients for encoder outputs
         if not self.config['train_enc']:
             unlab_enc.detach_()
@@ -509,83 +511,30 @@ class Solver(object):
         return gen_meta
 
     def ssl_train_one_iteration(self, iteration): 
-        d_steps = self.config['d_steps']
-        g_steps = self.config['g_steps']
-        acc_lb = self.config['acc_lowerbound']
-        acc_ub = self.config['acc_upperbound']
+        lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+        unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
-        avg_acc = self.acc_ema.get_moving_average()
-        dis_meta, gen_meta = {}, {}
+        gen_meta = self.gen_train_one_iteration(
+                lab_xs, lab_ilens, lab_ys,
+                unlab_xs, unlab_ilens)
 
-        # if the discriminator being too strong, freeze it
-        if avg_acc < acc_ub:
-            # train D steps of discriminator
-            for d_step in range(d_steps):
-                # load data
-                lab_data = next(self.lab_iter)
-                neg_data = next(self.neg_iter)
-                unlab_data = next(self.unlab_iter)
+        unsup_loss = gen_meta['unsup_loss']
+        sup_loss = gen_meta['sup_loss']
+        loss = gen_meta['loss']
+        acc = gen_meta['acc']
+        avg_acc = gen_meta['avg_acc']
 
-                lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-                neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
-                unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+        print(f'Gen:[{g_step + 1}/{g_steps}], '
+                f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
+                f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
+                end='\r')
 
-                dis_meta = self.judge_train_one_iteration(
-                        lab_xs, lab_ilens, lab_ys, 
-                        unlab_xs, unlab_ilens,
-                        neg_xs, neg_ilens, neg_ys)
-
-                real_loss = dis_meta['real_loss']
-                fake_loss = dis_meta['fake_loss']
-                neg_loss = dis_meta['neg_loss']
-
-                acc = dis_meta['acc']
-                avg_acc = dis_meta['avg_acc']
-
-                print(f'Dis:[{d_step + 1}/{d_steps}], '
-                        f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                        f', acc: {acc:.2f}, avg_acc: {avg_acc:.2f}', end='\r')
-
-                # add to tensorboard
-                step = iteration * d_steps + d_step + 1
-                tag = self.config['tag']
-                for key, val in dis_meta.items():
-                    self.logger.scalar_summary(f'{tag}/ssl_judge/{key}', val, step)
-            print()
-
-        avg_acc = self.acc_ema.get_moving_average()
-        # if acc >= lowerbound, train the generator
-        if avg_acc >= acc_lb: 
-            # train G step of generator
-            for g_step in range(g_steps):
-                # load data
-                lab_data = next(self.lab_iter)
-                unlab_data = next(self.unlab_iter)
-
-                lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-                unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-
-                gen_meta = self.gen_train_one_iteration(
-                        lab_xs, lab_ilens, lab_ys,
-                        unlab_xs, unlab_ilens)
-
-                unsup_loss = gen_meta['unsup_loss']
-                sup_loss = gen_meta['sup_loss']
-                loss = gen_meta['loss']
-                acc = gen_meta['acc']
-                avg_acc = gen_meta['avg_acc']
-
-                print(f'Gen:[{g_step + 1}/{g_steps}], '
-                        f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
-                        f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
-                        end='\r')
-
-                # add to tensorboard
-                step = iteration * g_steps + g_step + 1
-                tag = self.config['tag']
-                for key, val in gen_meta.items():
-                    self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
-            print()
+        # add to tensorboard
+        step = iteration * g_steps + g_step + 1
+        tag = self.config['tag']
+        for key, val in gen_meta.items():
+            self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
+        print()
         meta = {**dis_meta, **gen_meta}
         return meta 
 
