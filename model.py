@@ -286,7 +286,7 @@ class Decoder(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate, training=self.training)
+        output = F.dropout(output, self.dropout_rate)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -434,7 +434,8 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=3.0):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, 
+            sample=False, smooth=False, scaling=3.0):
         enc_h, enc_lens = self.encoder(data, ilens)
         logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, 
