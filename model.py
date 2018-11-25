@@ -257,11 +257,8 @@ class Decoder(torch.nn.Module):
             dropout_rate, bos, eos, pad, ls_weight=0, labeldist=None):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
-        # 3 is bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
-
-        # 3 is bos, eos, pad
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
         self.attention = attention
 
@@ -364,7 +361,7 @@ class Decoder(torch.nn.Module):
         # label smoothing
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
-            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
         return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
@@ -437,8 +434,7 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, 
-            tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=3.0):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False, smooth=False, scaling=3.0):
         enc_h, enc_lens = self.encoder(data, ilens)
         logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
                 tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, 
