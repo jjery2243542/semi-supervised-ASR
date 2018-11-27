@@ -66,11 +66,12 @@ class pBLSTM(torch.nn.Module):
 
             layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1,
                 bidirectional=True, batch_first=True))
+
             project_layers.append(torch.nn.Linear(project_dim, hidden_dim))
         self.layers = torch.nn.ModuleList(layers)
         self.project_layers = torch.nn.ModuleList(project_layers)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.subsample = subsample
-        self.dropout_rate = dropout_rate
 
     def forward(self, xpad, ilens):
         for i, (layer, project_layer) in enumerate(zip(self.layers, self.project_layers)):
@@ -91,7 +92,7 @@ class pBLSTM(torch.nn.Module):
                 ilens = [(length + 1) // sub for length in ilens]
             projected = project_layer(ys_pad)
             xpad = F.relu(projected)
-            xpad = F.dropout(xpad, self.dropout_rate, training=self.training)
+            xpad = self.dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
         return xpad, ilens
@@ -259,6 +260,7 @@ class Decoder(torch.nn.Module):
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.attention = attention
 
         self.hidden_dim = hidden_dim
@@ -279,7 +281,7 @@ class Decoder(torch.nn.Module):
 
     def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
         cell_inp = torch.cat([emb, c], dim=-1)
-        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
+        cell_inp = self.dropout_layer(cell_inp)
         dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
 
         # run attention module
@@ -289,7 +291,7 @@ class Decoder(torch.nn.Module):
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False, scaling=1.0):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -328,8 +330,12 @@ class Decoder(torch.nn.Module):
                     bos = cc(torch.Tensor([self.bos for _ in range(batch_size)]).type(torch.LongTensor))
                     emb = self.embedding(bos)
                 else:
-                    emb = self.embedding(prediction[-1])
-
+                    # using argmax
+                    if not smooth:
+                        emb = self.embedding(prediction[-1])
+                    # smooth approximation of embedding
+                    else:
+                        emb = F.softmax(logit * scaling, dim=-1) @ self.embedding.weight
             logit, dec_z, dec_c, c, w = \
                     self.forward_step(emb, dec_z, dec_c, c, w, enc_pad, enc_len)
 
@@ -355,8 +361,7 @@ class Decoder(torch.nn.Module):
         if self.ls_weight > 0:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * ys_log_probs
-
-        return ys_log_probs, prediction, ws
+        return logits, ys_log_probs, prediction, ws
 
     def recognize_beams(self, enc_pad, enc_len, max_dec_timesteps, topk):
         pass
@@ -428,11 +433,12 @@ class E2E(torch.nn.Module):
                 eos=eos, 
                 pad=pad)
 
-    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, sample=False):
+    def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, 
+            sample=False, smooth=False, scaling=3.0):
         enc_h, enc_lens = self.encoder(data, ilens)
-        log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample)
-        return log_probs, prediction, ws
+        logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample, smooth=smooth, scaling=scaling)
+        return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
         # add 1 to EOS
@@ -444,6 +450,201 @@ class E2E(torch.nn.Module):
         # divide by total length
         loss = -torch.sum(log_probs * mask) / sum(seq_len)
         return loss
+
+# like standard LM
+class LM(torch.nn.Module):
+    def __init__(self, output_dim, embedding_dim, hidden_dim, dropout_rate, n_layers,
+            bos, eos, pad, ls_weight, labeldist):
+        super(LM, self).__init__()
+
+        self.bos, self.eos, self.pad = bos, eos, pad
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+        self.LSTM = torch.nn.LSTM(embedding_dim, hidden_dim, num_layers=n_layers, batch_first=True, 
+                dropout=dropout_rate if n_layers > 1 else 0)
+
+        # re-init
+        weight_init(self.LSTM)
+
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
+        self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
+
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.dropout_rate = dropout_rate
+        self.n_layers = n_layers
+
+        # label smoothing hyperparameters
+        self.ls_weight = ls_weight
+        self.labeldist = labeldist
+        if labeldist is not None:
+            self.vlabeldist = cc(torch.from_numpy(np.array(labeldist, dtype=np.float32)))
+
+    def zero_state(self, ref, dim=None):
+        if not dim:
+            return ref.new_zeros(self.n_layers, ref.size(0), self.hidden_dim)
+        else:
+            return ref.new_zeros(self.n_layers, ref.size(0), dim)
+
+    def forward(self, ys=None, discrete_input=True):
+        bos = ys[0].data.new([self.bos])
+        eos = ys[0].data.new([self.eos])
+        if discrete_input:
+            ys_in = [torch.cat([bos, y, eos, eos, eos, eos], dim=0) for y in ys]
+            ys_out = [torch.cat([y, eos, eos, eos, eos, eos], dim=0) for y in ys]
+            pad_ys_in = pad_sequence(ys_in, batch_first=True, padding_value=self.eos) 
+            pad_ys_out = pad_sequence(ys_out, batch_first=True, padding_value=self.eos)
+        # for generate output
+        else:
+            # add <bos> at the beginning, and drop last as input
+            bos_seq = ys.new(ys.size(0), 1).fill_(bos)
+            pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
+            pad_ys_out = ys
+
+        # get length info
+        batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+        # map idx to embedding
+        eys = self.embedding(pad_ys_in)
+        eys = self.dropout_layer(eys)
+        # using pack to speedup
+        if discrete_input:
+            ilens = [y.size(0) for y in ys_in]
+            packed_eys = pack_padded_sequence(eys, ilens, batch_first=True)
+            output, (_, _) = self.LSTM(packed_eys)
+            output, _ = pad_packed_sequence(output, batch_first=True)
+        else:
+            output, (_, _) = self.LSTM(eys)
+
+        output = self.dropout_layer(output).squeeze(1)
+        logits = self.output_layer(output)
+        log_probs = F.log_softmax(logits, dim=2)
+        probs = F.softmax(logits, dim=2)
+        ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
+        # label smoothing
+        if self.ls_weight > 0:
+            loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
+            ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
+        predictions = torch.argmax(logits, dim=-1)
+        return ys_log_probs, ys_probs, predictions
+
+    # only use in decode stage
+    def forward_step(self, emb, dec_z=None, dec_c=None):
+        if dec_z is not None:
+            output, (dec_z, dec_c) = self.LSTM(emb, (dec_z, dec_c))
+        else:
+            output, (dec_z, dec_c) = self.LSTM(emb)
+        output.squeeze_(1)
+        logit = self.output_layer(output)
+        return logit, dec_z, dec_c
+
+    def decode(self, n_samples=5, sample=False, max_dec_timesteps=500):
+        logits, predictions = [], []
+        dec_c, dec_z = None, None
+        for t in range(max_dec_timesteps):
+            if t == 0:
+                bos = cc(torch.Tensor([self.bos for _ in range(n_samples)]).type(torch.LongTensor))
+                emb = self.embedding(bos).unsqueeze(1)
+            else:
+                emb = self.embedding(predictions[-1]).unsqueeze(1)
+            logit, dec_z, dec_c = self.forward_step(emb, dec_z, dec_c)
+            logits.append(logit)
+            if not sample:
+                predictions.append(torch.argmax(logit, dim=-1))
+            else:
+                sampled_indices = Categorical(logits=logit).sample() 
+                predictions.append(sampled_indices)
+
+        logits = torch.stack(logits, dim=1)
+        predictions = torch.stack(predictions, dim=1)
+        return predictions
+
+    def mask_and_cal_sum(self, log_probs, ys, mask=None):
+        if mask is None: 
+            seq_len = [y.size(0) + 1 + 4 for y in ys]
+            mask = cc(_seq_mask(seq_len=seq_len, max_len=log_probs.size(1)))
+        else:
+            seq_len = [y.size(0) for y in ys]
+        # divide by total length
+        loss = torch.sum(log_probs * mask) / sum(seq_len)
+        return loss
+
+'''
+class AELScorer(torch.nn.Module):
+    def __init__(self, decoder, attention, 
+            output_dim, embedding_dim, hidden_dim, att_odim, dropout_rate, 
+            eos, pad):
+        super(AELScorer, self).__init__()
+        self.eos, self.pad = eos, pad
+
+        self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
+        self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
+        # load decoder weight
+        self.embedding.load_state_dict(decoder.embedding.state_dict())
+        self.embedding.requires_grad = False
+        self.LSTMCell.load_state_dict(decoder.LSTMCell.state_dict())
+
+        self.output_layer = torch.nn.Linear(hidden_dim, 1)
+        self.attention = attention
+        self.attention.requires_grad = False
+
+        self.hidden_dim = hidden_dim
+        self.att_odim = att_odim
+        self.dropout_rate = dropout_rate
+
+    def zero_state(self, enc_pad, dim=None):
+        if not dim:
+            return enc_pad.new_zeros(enc_pad.size(0), self.hidden_dim)
+        else:
+            return enc_pad.new_zeros(enc_pad.size(0), dim)
+
+    def forward_step(self, emb, dec_z, dec_c, c, w, enc_pad, enc_len):
+        cell_inp = torch.cat([emb, c], dim=-1)
+        cell_inp = F.dropout(cell_inp, self.dropout_rate, training=self.training)
+        dec_z, dec_c = self.LSTMCell(cell_inp, (dec_z, dec_c))
+
+        # run attention module
+        c, w = self.attention(enc_pad, enc_len, dec_z, w)
+        # no concatenate on cell_output and context vector
+        #output = torch.cat([dec_z, c], dim=-1)
+        output = F.dropout(dec_z, self.dropout_rate)
+        logit = self.output_layer(output)
+        return logit, dec_z, dec_c, c, w
+
+    def forward(self, enc_pad, enc_len, ys, is_distr=False):
+        batch_size = enc_pad.size(0)
+
+        if not is_distr:
+            # prepare sequences
+            pad_ys_in = pad_list(ys, pad_value=self.eos)
+
+            # get length info
+            batch_size, olength = pad_ys_in.size(0), pad_ys_in.size(1)
+            # map idx to embedding
+            eys = self.embedding(pad_ys_in)
+        else:
+            # if is_distr (batch_size, length, vocab_size), multiply the distr to embedding weight
+            eys = ys @ self.embedding.weight
+            olength = ys.size(1)
+
+        # initialization
+        dec_c = self.zero_state(enc_pad)
+        dec_z = self.zero_state(enc_pad)
+        c = self.zero_state(enc_pad, dim=self.att_odim)
+
+        w = None
+        logits, prediction, ws = [], [], []
+        # reset the attention module
+        self.attention.reset()
+
+        # loop for each timestep
+        for t in range(olength):
+            logit, dec_z, dec_c, c, w = \
+                    self.forward_step(eys[:, t, :], dec_z, dec_c, c, w, enc_pad, enc_len)
+            ws.append(w)
+
+        probs = torch.sigmoid(logit.squeeze(-1))
+        cell_outputs = dec_z
+        return probs, cell_outputs, ws
 
 class Scorer(torch.nn.Module):
     def __init__(self, decoder, attention, 
@@ -479,7 +680,7 @@ class Scorer(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = F.dropout(output, self.dropout_rate, training=self.training)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
@@ -543,28 +744,33 @@ class Judge(torch.nn.Module):
                 att_odim=att_odim)
         self.attention.load_state_dict(attention.state_dict())
 
-        self.scorer = Scorer(decoder, self.attention, 
+        self.scorer = AELScorer(decoder, self.attention, 
                 output_dim=output_dim, embedding_dim=embedding_dim, 
                 hidden_dim=dec_hidden_dim, att_odim=att_odim, dropout_rate=dropout_rate, 
                 eos=eos, pad=pad)
 
-    def forward(self, data, ilens, ys):
-        enc_h, enc_lens = self.encoder(data, ilens)
-        probs, ws = self.scorer(enc_h, enc_lens, ys)
-        return probs, ws
+    def forward(self, data, ilens, ys, is_distr=False):
+        if self.shared:
+            with torch.no_grad():
+                enc_h, enc_lens = self.encoder(data, ilens)
+        else:
+            enc_h, enc_lens = self.encoder(data, ilens)
+        probs, cell_out, ws = self.scorer(enc_h, enc_lens, ys, is_distr=is_distr)
+        return probs, cell_out, ws
 
-    def mask_and_average(self, probs, ys):
-        seq_len = [y.size(0) for y in ys]
-        mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
-        masked_probs = probs * mask
-        # divide by total length
-        avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
-        return avg_probs, masked_probs, mask
+    #def mask_and_average(self, probs, ys):
+    #    seq_len = [y.size(0) for y in ys]
+    #    mask = cc(_seq_mask(seq_len=seq_len, max_len=probs.size(1)))
+    #    masked_probs = probs * mask
+    #    # divide by total length
+    #    avg_probs = torch.sum(masked_probs, dim=1) / (torch.sum(mask, dim=1) + 1e-10)
+    #    return avg_probs, masked_probs, mask
 
     #def mask_and_cal_loss(self, avg_probs, target):
     #    avg_probs = self.mask(probs, ys)
     #    loss = F.binary_cross_entropy(avg_probs, target)
     #    return loss, avg_probs
+'''
 
 if __name__ == '__main__':
     # just for debugging

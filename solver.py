@@ -1,7 +1,7 @@
 import torch 
 import torch.nn.functional as F
 import numpy as np
-from model import E2E, Judge
+from model import E2E, LM
 from dataloader import get_data_loader
 from dataset import PickleDataset, NegativeDataset
 from utils import *
@@ -25,7 +25,8 @@ class Solver(object):
         self.get_data_loaders()
 
         # get label distribution
-        self.get_label_dist(self.train_lab_dataset)
+        self.labeldist = self.get_label_dist(self.train_lab_dataset)
+        self.unlab_labeldist = self.get_label_dist(self.train_unlab_y_dataset)
 
         # calculate proportion between features and characters
         self.proportion = self.calculate_length_proportion()
@@ -56,7 +57,6 @@ class Solver(object):
         if load_optimizer:
             print(f'Load optmizer from {model_path}.opt')
             self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
-            #adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
         return
 
     def load_judge(self, model_path, load_optmizer):
@@ -73,8 +73,8 @@ class Solver(object):
         labelcount[self.vocab['<EOS>']] += len(dataset)
         labelcount[self.vocab['<PAD>']] = 0
         labelcount[self.vocab['<BOS>']] = 0
-        self.labeldist = labelcount / np.sum(labelcount)
-        return
+        labeldist = labelcount / np.sum(labelcount)
+        return labeldist
 
     def calculate_length_proportion(self):
         x_len, y_len = 0, 0
@@ -91,15 +91,26 @@ class Solver(object):
             config=self.config, sort=True)
         self.train_lab_loader = get_data_loader(self.train_lab_dataset, 
                 batch_size=self.config['batch_size'], 
-                shuffle=self.config['shuffle'])
+                shuffle=self.config['shuffle'],
+                drop_last=True)
 
         # get unlabeled dataset
-        unlabeled_set = self.config['unlabeled_speech_set']
-        self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
+        unlabeled_x_set = self.config['unlabeled_speech_set']
+        self.train_unlab_x_dataset = PickleDataset(
+                os.path.join(root_dir, f'{unlabeled_x_set}.pkl'), 
             config=self.config, sort=True)
-        self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
+        self.train_unlab_x_loader = get_data_loader(self.train_unlab_x_dataset, 
                 batch_size=self.config['batch_size'], 
-                shuffle=self.config['shuffle'])
+                shuffle=self.config['shuffle'],
+                drop_last=True, speech_only=True)
+        unlabeled_y_set = self.config['unlabeled_text_set']
+        self.train_unlab_y_dataset = PickleDataset(
+                os.path.join(root_dir, f'{unlabeled_y_set}.pkl'), 
+            config=self.config, sort=True)
+        self.train_unlab_y_loader = get_data_loader(self.train_unlab_y_dataset, 
+                batch_size=self.config['batch_size'], 
+                shuffle=self.config['shuffle'],
+                drop_last=True, text_only=True)
 
         # get dev dataset
         dev_set = self.config['dev_set']
@@ -107,26 +118,17 @@ class Solver(object):
         self.dev_dataset = PickleDataset(os.path.join(root_dir, f'{dev_set}.pkl'), sort=True)
         self.dev_loader = get_data_loader(self.dev_dataset, 
                 batch_size=self.config['batch_size'] // 2, 
-                shuffle=False)
-
-        # get negative sample dataloader for judge training
-        self.neg_dataset = NegativeDataset(os.path.join(root_dir, f'{labeled_set}.pkl'),
-                config=self.config, sort=True)
-        self.neg_loader = get_data_loader(self.neg_dataset, batch_size=self.config['batch_size'], 
-                shuffle=True)
+                shuffle=False, drop_last=False)
         return
 
     def get_infinite_iter(self):
         # dataloader to cycle iterator 
         self.lab_iter = infinite_iter(self.train_lab_loader)
-        self.unlab_iter = infinite_iter(self.train_unlab_loader)
-        self.neg_iter = infinite_iter(self.neg_loader)
+        self.unlab_x_iter = infinite_iter(self.train_unlab_x_loader)
+        self.unlab_y_iter = infinite_iter(self.train_unlab_y_loader)
         return
 
     def build_model(self, load_model=False):
-        labeldist = self.labeldist
-        ls_weight = self.config['ls_weight']
-
         self.model = cc(E2E(input_dim=self.config['input_dim'],
             enc_hidden_dim=self.config['enc_hidden_dim'],
             enc_n_layers=self.config['enc_n_layers'],
@@ -139,8 +141,8 @@ class Solver(object):
             att_odim=self.config['att_odim'],
             output_dim=len(self.vocab),
             embedding_dim=self.config['embedding_dim'],
-            ls_weight=ls_weight,
-            labeldist=labeldist,
+            ls_weight=self.config['ls_weight'],
+            labeldist=self.labeldist,
             pad=self.vocab['<PAD>'],
             bos=self.vocab['<BOS>'],
             eos=self.vocab['<EOS>']
@@ -149,45 +151,30 @@ class Solver(object):
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
         print(self.gen_opt)
-
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
-        #self.judge = cc(
-        #        Judge(encoder=self.model.encoder, 
-        #            attention=self.model.attention,
-        #            decoder=self.model.decoder, 
-        #            input_dim=self.config['input_dim'],
-        #            enc_hidden_dim=self.config['enc_hidden_dim'],
-        #            enc_n_layers=self.config['enc_n_layers'],
-        #            subsample=self.config['subsample'],
-        #            dropout_rate=self.config['dropout_rate'],
-        #            dec_hidden_dim=self.config['dec_hidden_dim'],
-        #            att_dim=self.config['att_dim'],
-        #            conv_channels=self.config['conv_channels'],
-        #            conv_kernel_size=self.config['conv_kernel_size'],
-        #            att_odim=self.config['att_odim'],
-        #            embedding_dim=self.config['embedding_dim'],
-        #            output_dim=len(self.vocab),
-        #            pad=self.vocab['<PAD>'],
-        #            eos=self.vocab['<EOS>'],
-        #            shared=self.config['judge_share_param']
-        #            ))
-        #print(self.judge)
-        # exponential moving average
-        #self.ema = EMA(momentum=self.config['ema_momentum'])
-        #if self.config['judge_share_param']:
-        #    self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-        #        weight_decay=self.config['weight_decay'])
-        #else:
-        #    self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-        #        weight_decay=self.config['weight_decay'])
+        self.judge = cc(LM(
+                output_dim=len(self.vocab),
+                embedding_dim=self.config['dis_embedding_dim'],
+                hidden_dim=self.config['dis_hidden_dim'],
+                dropout_rate=self.config['dis_dropout_rate'],
+                n_layers=self.config['dis_layers'],
+                bos=self.vocab['<BOS>'],
+                eos=self.vocab['<EOS>'],
+                pad=self.vocab['<PAD>'],
+                ls_weight=self.config['ls_weight'],
+                labeldist=self.unlab_labeldist
+            ))
+        print(self.judge)
+        self.dis_opt = torch.optim.Adam(
+                filter(lambda p: p.requires_grad, self.judge.parameters()), 
+                lr=self.config['d_learning_rate']) 
         return
 
     def ind2sent(self, all_prediction, all_ys):
         # remove eos and pad
         prediction_til_eos = remove_pad_eos(all_prediction, eos=self.vocab['<EOS>'])
-        #prediction_til_eos = all_prediction
 
         # indexes to characters
         prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
@@ -197,6 +184,30 @@ class Solver(object):
         cer = calculate_cer(prediction_sents, ground_truth_sents)
         return cer, prediction_sents, ground_truth_sents
 
+    def lm_validation(self):
+        self.judge.eval()
+        total_loss = 0.
+        total_steps = len(self.dev_loader)
+
+        for step, data in enumerate(self.dev_loader):
+            _, _, ys = to_gpu(data)
+            ys.sort(key=lambda x: len(x), reverse=True)
+            # calculate loss
+            log_probs, _, _ = self.judge(ys)
+            loss = -self.judge.mask_and_cal_sum(log_probs, ys)
+            total_loss += loss.item()
+
+        # random predict n_samples
+        predictions = self.judge.decode(n_samples=5, sample=True)
+        # remove eos and pad
+        prediction_til_eos = remove_pad_eos(predictions.cpu().numpy(), eos=self.vocab['<EOS>'])
+        # indexes to characters
+        prediction_sents = to_sents(prediction_til_eos, self.vocab, self.non_lang_syms)
+
+        self.judge.train()
+        avg_loss = total_loss / total_steps
+        return avg_loss, prediction_sents
+            
     def validation(self):
 
         self.model.eval()
@@ -207,7 +218,7 @@ class Solver(object):
             xs, ilens, ys = to_gpu(data)
 
             # calculate loss
-            log_probs, _ , _ = self.model(xs, ilens, ys=ys)
+            _, log_probs, _ , _ = self.model(xs, ilens, ys=ys)
             loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
@@ -215,7 +226,7 @@ class Solver(object):
             max_dec_timesteps = max([y.size(0) for y in ys])
 
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _ , prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -246,7 +257,7 @@ class Solver(object):
 
         test_loader = get_data_loader(test_dataset, 
                 batch_size=1, 
-                shuffle=False)
+                shuffle=False, drop_last=False)
 
         self.model.eval()
         all_prediction, all_ys = [], []
@@ -255,11 +266,8 @@ class Solver(object):
 
             xs, ilens, ys = to_gpu(data)
 
-            # max length in ys
-            max_dec_timesteps = max([y.size(0) for y in ys])
-
             # feed previous
-            _ , prediction, _ = self.model(xs, ilens, ys=None, 
+            _, _ , prediction, _ = self.model(xs, ilens, ys=None, 
                     max_dec_timesteps=self.config['max_dec_timesteps'])
 
             all_prediction = all_prediction + prediction.cpu().numpy().tolist()
@@ -276,113 +284,70 @@ class Solver(object):
         print(f'{test_set}: {len(prediction_sents)} utterances, CER={cer:.4f}')
         return cer
 
-    def sample_and_calculate_judge_probs(self, unlab_xs, unlab_ilens):
-        # random sample with average length
-        gen_log_probs, unlab_ys_hat, _ = self.model(unlab_xs, unlab_ilens, ys=None, sample=True, 
-                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion + self.config['extra_length']))
+    def judge_train_one_iteration(self, unlab_ys):
+        log_probs, probs, _ = self.judge(ys=unlab_ys, discrete_input=True)
+        loss = -self.judge.mask_and_cal_sum(log_probs, ys=unlab_ys, mask=None)
+        avg_prob = self.judge.mask_and_cal_sum(probs, ys=unlab_ys, mask=None)
 
-        # remove tokens after eos 
-        unlab_ys_hat = remove_pad_eos_batch(unlab_ys_hat, eos=self.vocab['<EOS>'])
-        unlab_probs, _ = self.judge(unlab_xs, unlab_ilens, unlab_ys_hat)
-        return unlab_probs, unlab_ys_hat, gen_log_probs
-
-    def judge_train_one_iteration(self, 
-            lab_xs, 
-            lab_ilens, 
-            lab_ys,
-            unlab_xs, 
-            unlab_ilens,
-            neg_xs,
-            neg_ilens,
-            neg_ys):
-
-        unlab_probs, unlab_ys_hat, _ = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        lab_probs, _ = self.judge(lab_xs, lab_ilens, lab_ys)
-
-        # use mismatched (speech, text) for negative samples
-        neg_probs, _ = self.judge(neg_xs, neg_ilens, neg_ys)
-
-        # calculate loss and acc
-        real_labels = cc(torch.ones(lab_probs.size(0)))
-        real_probs, _, _ = self.judge.mask_and_average(lab_probs, lab_ys)
-        real_loss = F.binary_cross_entropy(real_probs, real_labels)
-        real_correct = torch.sum((real_probs >= 0.5).float())
-
-        fake_labels = cc(torch.zeros(unlab_probs.size(0)))
-        fake_probs, _, _ = self.judge.mask_and_average(unlab_probs, unlab_ys_hat)
-        fake_loss = F.binary_cross_entropy(fake_probs, fake_labels)
-        fake_correct = torch.sum((fake_probs < 0.5).float())
-
-        fake_labels = cc(torch.zeros(neg_probs.size(0)))
-        neg_probs, _, _ = self.judge.mask_and_average(neg_probs, neg_ys)
-        neg_loss = F.binary_cross_entropy(neg_probs, fake_labels)
-        neg_correct = torch.sum((neg_probs < 0.5).float()) 
-
-        loss = real_loss + (fake_loss + neg_loss) / 2
-        real_acc = real_correct / lab_probs.size(0)
-        fake_acc = fake_correct / unlab_probs.size(0)
-        neg_acc = neg_correct / neg_probs.size(0)
-        acc = (real_correct + fake_correct + neg_correct) / \
-                (lab_probs.size(0) + unlab_probs.size(0) + neg_probs.size(0))
         # calculate gradients
-
         self.dis_opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.judge.parameters(), max_norm=self.config['max_grad_norm'])
         self.dis_opt.step()
 
-        meta = {'real_loss':real_loss.item(),
-                'fake_loss':fake_loss.item(),
-                'neg_loss':neg_loss.item(),
-                'real_acc':real_acc.item(),
-                'fake_acc':fake_acc.item(),
-                'neg_acc':neg_acc.item(),
-                'real_prob':torch.mean(real_probs).item(),
-                'fake_prob':torch.mean(fake_probs).item(),
-                'neg_prob':torch.mean(neg_probs).item(),
-                'loss':loss.item(),
-                'acc':acc.item()}
+        meta = {'loss': loss.item(),
+                'avg_prob': avg_prob.item()}
         return meta
 
     def judge_pretrain(self):
-        # using cycle-iterator to get data
-        self.get_infinite_iter()
-        judge_iterations = self.config['judge_iterations']
+        judge_epochs = self.config['judge_epochs']
+        total_steps = len(self.train_unlab_y_loader)
+        best_val_loss = 100
         print('--------Judge pretraining--------')
-        for iteration in range(judge_iterations):
-            # load data
-            lab_data = next(self.lab_iter)
-            unlab_data = next(self.unlab_iter)
-            neg_data = next(self.neg_iter)
+        for epoch in range(judge_epochs):
+            total_loss = 0.
+            for train_steps, data in enumerate(self.train_unlab_y_loader):
+                unlab_ys = [cc(y) for y in data]
+                meta = self.judge_train_one_iteration(unlab_ys)
 
-            lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-            unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
-            neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
+                loss = meta['loss']
+                avg_prob = meta['avg_prob']
+                total_loss += loss
 
-            meta = self.judge_train_one_iteration(
-                    lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens,
-                    neg_xs, neg_ilens, neg_ys)
+                print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], '
+                      f'loss: {loss:.3f}, prob: {avg_prob:.3f}', end='\r')
 
-            real_loss = meta['real_loss']
-            fake_loss = meta['fake_loss']
-            neg_loss = meta['neg_loss']
+                # add to tensorboard
+                tag = self.config['tag']
+                for key, val in meta.items():
+                    self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, 
+                            epoch * total_steps + train_steps + 1)
 
-            acc = meta['acc']
-
-            print(f'Iter:[{iteration + 1}/{judge_iterations}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
+            # calculate average loss
+            avg_train_loss = total_loss / total_steps
+            val_loss, predictions = self.lm_validation()
+            print(f'epoch: {epoch}, train_loss={avg_train_loss:.3f}, valid_loss={val_loss:.3f}')
+            print('-----------------')
+            for i, p in enumerate(predictions):
+                print(f'hyp-{i+1}: {p}')
+            print('-----------------')
 
             # add to tensorboard
             tag = self.config['tag']
-            for key, val in meta.items():
-                self.logger.scalar_summary(f'{tag}/judge_pretrain/{key}', val, iteration + 1)
+            self.logger.scalar_summary(f'{tag}/judge_pretrain/val_loss', val_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/judge_pretrain/avg_train_loss', avg_train_loss, epoch)
 
-            if (iteration + 1) % self.config['summary_steps'] == 0 or (iteration + 1) == judge_iterations:
-                print('')
+            if val_loss < best_val_loss: 
+                # save model 
+                best_val_loss = val_loss
                 model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                 self.save_judge(model_path)
+                print(f'save #{epoch} LM, val_loss={val_loss:.3f}')
+                print('-----------------')
+
+            # save model in every epoch
+            model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
+            self.save_judge(f'{model_path}-{epoch:03d}')
         return 
     
     def sup_train_one_epoch(self, epoch, tf_rate):
@@ -399,19 +364,18 @@ class Solver(object):
                 gau = np.random.normal(0, self.config['gaussian_std'], (xs.size(0), xs.size(1), xs.size(2)))
                 gau = cc(torch.from_numpy(np.array(gau, dtype=np.float32)))
                 xs = xs + gau
-
             # input the model
-            log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
+            logits, log_probs, prediction, _ = self.model(xs, ilens, ys, tf_rate=tf_rate, sample=False)
             # mask and calculate loss
             loss = -torch.mean(log_probs)
             #loss = self.model.mask_and_cal_loss(log_probs, ys)
             total_loss += loss.item()
 
             # calculate gradients 
-            self.gen_opt.zero_grad()
+            self.opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-            self.gen_opt.step()
+            self.opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             # add to logger
@@ -460,6 +424,7 @@ class Solver(object):
             tag = self.config['tag']
             self.logger.scalar_summary(f'{tag}/supervised/cer', cer, epoch)
             self.logger.scalar_summary(f'{tag}/supervised/val_loss', avg_valid_loss, epoch)
+            self.logger.scalar_summary(f'{tag}/supervised/avg_train_loss', avg_train_loss, epoch)
 
             # only add first n samples
             lead_n = 5
@@ -489,110 +454,90 @@ class Solver(object):
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
 
-        judge_scores, unlab_ys_hat, unlab_log_probs = self.sample_and_calculate_judge_probs(unlab_xs, unlab_ilens)
-        avg_probs, masked_judge_scores, mask = self.judge.mask_and_average(judge_scores, unlab_ys_hat)
-        # baseline: exponential average
-        running_average = self.ema(torch.mean(avg_probs))
+        unlab_logits, unlab_log_probs, unlab_prediction, _ = self.model(
+                unlab_xs, 
+                unlab_ilens, 
+                ys=None, sample=False, 
+                max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
+                smooth=self.config['smooth_embedding'])
+        # stop gradients for encoder outputs
+        if not self.config['train_enc']:
+            unlab_enc.detach_()
+        unlab_distr = F.softmax(unlab_logits, dim=-1)
+        # speech have been encoded
+        unlab_probs, unlab_latent, _ = self.judge.scorer(
+                unlab_enc, unlab_enc_lens, ys=unlab_distr, is_distr=True)
 
-        # substract baseline
-        #judge_scores = (judge_scores - running_average) * mask
-        judge_scores = judge_scores * mask
+        # calculate loss
+        real_labels = cc(torch.ones(unlab_probs.size(0)))
+        gen_loss = F.binary_cross_entropy(unlab_probs, real_labels)
+        fake_correct = torch.sum((unlab_probs < 0.5).float())
+        
+        if self.config['feature_matching']:
+            # calculate feature matching loss
+            lab_probs, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
+            fm_loss = torch.sum((torch.mean(unlab_latent, dim=0) - torch.mean(lab_latent, dim=0)) ** 2)
+            unsup_loss = gen_loss + self.config['fm_weight'] * fm_loss
+            real_correct = torch.sum((lab_probs >= 0.5).float())
+            acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
+        else:
+            unsup_loss = gen_loss
+            acc = fake_correct / unlab_probs.size(0)
 
-        # pad judge_scores to length of unlab_log_probs
-        padded_judge_scores = judge_scores.data.new(judge_scores.size(0), unlab_log_probs.size(1)).fill_(0.)
-        padded_judge_scores[:, :judge_scores.size(1)] += judge_scores
-
-        unsup_loss = self.model.mask_and_cal_loss(unlab_log_probs, ys=unlab_ys_hat, mask=padded_judge_scores)
-
+        avg_acc = self.acc_ema(acc)
         # mask and calculate loss
-        lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
-        sup_loss = self.model.mask_and_cal_loss(lab_log_probs, lab_ys, mask=None)
-        gen_loss = sup_loss + self.config['unsup_weight'] * unsup_loss
+        _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
+        sup_loss = -torch.mean(lab_log_probs)
+        loss = sup_loss + self.config['unsup_weight'] * unsup_loss
 
-        # calculate gradients 
-
+        # calculate gradients
         self.gen_opt.zero_grad()
-        gen_loss.backward()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
         self.gen_opt.step()
 
         gen_meta = {'unsup_loss': unsup_loss.item(),
                     'sup_loss': sup_loss.item(),
-                    'gen_loss': gen_loss.item()}
+                    'loss': loss.item(),
+                    'acc':acc.item(),
+                    'avg_acc':avg_acc.item()}
+
+        if self.config['feature_matching']:
+            gen_meta['fm_loss'] = fm_loss.item()
         return gen_meta
 
     def ssl_train_one_iteration(self, iteration): 
-        d_steps = self.config['d_steps']
-        g_steps = self.config['g_steps']
-
-        # load data
-        lab_data = next(self.lab_iter)
-        neg_data = next(self.neg_iter)
-        unlab_data = next(self.unlab_iter)
-
         lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-        neg_xs, neg_ilens, neg_ys = to_gpu(neg_data)
         unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
 
-        # train D steps of discriminator
-        for d_step in range(d_steps):
-            dis_meta = self.judge_train_one_iteration(
-                    lab_xs, lab_ilens, lab_ys, 
-                    unlab_xs, unlab_ilens,
-                    neg_xs, neg_ilens, neg_ys)
+        gen_meta = self.gen_train_one_iteration(
+                lab_xs, lab_ilens, lab_ys,
+                unlab_xs, unlab_ilens)
 
-            real_loss = dis_meta['real_loss']
-            fake_loss = dis_meta['fake_loss']
-            neg_loss = dis_meta['neg_loss']
+        unsup_loss = gen_meta['unsup_loss']
+        sup_loss = gen_meta['sup_loss']
+        loss = gen_meta['loss']
+        acc = gen_meta['acc']
+        avg_acc = gen_meta['avg_acc']
 
-            acc = dis_meta['acc']
+        print(f'Gen:[{g_step + 1}/{g_steps}], '
+                f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
+                f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
+                end='\r')
 
-            print(f'Dis:[{d_step + 1}/{d_steps}], '
-                    f'real_loss: {real_loss:.3f}, fake_loss: {fake_loss:.3f}, neg_loss: {neg_loss:.3f}'
-                    f', acc: {acc:.2f}', end='\r')
-
-            # add to tensorboard
-            step = iteration * d_steps + d_step + 1
-            tag = self.config['tag']
-            for key, val in dis_meta.items():
-                self.logger.scalar_summary(f'{tag}/ssl_judge/{key}', val, step)
+        # add to tensorboard
+        step = iteration * g_steps + g_step + 1
+        tag = self.config['tag']
+        for key, val in gen_meta.items():
+            self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
         print()
-
-        # store model
-        model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
-        self.save_judge(model_path)
-
-
-        # train G step of generator
-        for g_step in range(g_steps):
-            gen_meta = self.gen_train_one_iteration(
-                    lab_xs, lab_ilens, lab_ys,
-                    unlab_xs, unlab_ilens)
-
-            unsup_loss = gen_meta['unsup_loss']
-            sup_loss = gen_meta['sup_loss']
-            gen_loss = gen_meta['gen_loss']
-
-            print(f'Gen:[{g_step + 1}/{g_steps}], '
-                    f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, gen_loss: {gen_loss:.3f}',
-                    end='\r')
-
-            # add to tensorboard
-            step = iteration * g_steps + g_step + 1
-            tag = self.config['tag']
-            for key, val in gen_meta.items():
-                self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
-        print()
-
-        if d_steps > 0:
-            meta = {**dis_meta, **gen_meta}
-            return meta 
+        meta = {**dis_meta, **gen_meta}
+        return meta 
 
     def ssl_train(self):
         print('--------SSL training--------')
         # adjust learning rate
         adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
-        print(self.gen_opt)
 
         best_cer = 1000
         best_model = None
@@ -630,6 +575,7 @@ class Solver(object):
                     model_path = os.path.join(self.config['model_dir'], self.config['model_name'])
                     best_cer = cer
                     self.save_model(model_path)
+                    self.save_judge(model_path)
                     best_model = self.model.state_dict()
                     print(f'Save #{step} model, val_loss={avg_valid_loss:.3f}, CER={cer:.3f}')
                     print('-----------------')
