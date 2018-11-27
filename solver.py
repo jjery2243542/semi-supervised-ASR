@@ -92,7 +92,7 @@ class Solver(object):
         self.train_lab_loader = get_data_loader(self.train_lab_dataset, 
                 batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'],
-                drop_last=True)
+                drop_last=False)
 
         # get unlabeled dataset
         unlabeled_x_set = self.config['unlabeled_speech_set']
@@ -102,7 +102,7 @@ class Solver(object):
         self.train_unlab_x_loader = get_data_loader(self.train_unlab_x_dataset, 
                 batch_size=self.config['batch_size'], 
                 shuffle=self.config['shuffle'],
-                drop_last=True, speech_only=True)
+                drop_last=False, speech_only=True)
         unlabeled_y_set = self.config['unlabeled_text_set']
         self.train_unlab_y_dataset = PickleDataset(
                 os.path.join(root_dir, f'{unlabeled_y_set}.pkl'), 
@@ -372,10 +372,10 @@ class Solver(object):
             total_loss += loss.item()
 
             # calculate gradients 
-            self.opt.zero_grad()
+            self.gen_opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config['max_grad_norm'])
-            self.opt.step()
+            self.gen_opt.step()
             # print message
             print(f'epoch: {epoch}, [{train_steps + 1}/{total_steps}], loss: {loss:.3f}', end='\r')
             # add to logger
