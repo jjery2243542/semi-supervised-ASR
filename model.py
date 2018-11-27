@@ -256,10 +256,8 @@ class Decoder(torch.nn.Module):
             dropout_rate, bos, eos, pad, ls_weight=0, labeldist=None):
         super(Decoder, self).__init__()
         self.bos, self.eos, self.pad = bos, eos, pad
-        # 3 is bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
-        # 3 is bos, eos, pad
         self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
         self.attention = attention
 

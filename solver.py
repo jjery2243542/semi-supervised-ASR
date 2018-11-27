@@ -56,7 +56,7 @@ class Solver(object):
         if load_optimizer:
             print(f'Load optmizer from {model_path}.opt')
             self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
-            adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+            #adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
         return
 
     def load_judge(self, model_path, load_optmizer):
@@ -94,7 +94,7 @@ class Solver(object):
                 shuffle=self.config['shuffle'])
 
         # get unlabeled dataset
-        unlabeled_set = self.config['unlabeled_set']
+        unlabeled_set = self.config['unlabeled_speech_set']
         self.train_unlab_dataset = PickleDataset(os.path.join(root_dir, f'{unlabeled_set}.pkl'), 
             config=self.config, sort=True)
         self.train_unlab_loader = get_data_loader(self.train_unlab_dataset, 
@@ -148,39 +148,40 @@ class Solver(object):
         print(self.model)
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'])
+        print(self.gen_opt)
 
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
 
-        self.judge = cc(
-                Judge(encoder=self.model.encoder, 
-                    attention=self.model.attention,
-                    decoder=self.model.decoder, 
-                    input_dim=self.config['input_dim'],
-                    enc_hidden_dim=self.config['enc_hidden_dim'],
-                    enc_n_layers=self.config['enc_n_layers'],
-                    subsample=self.config['subsample'],
-                    dropout_rate=self.config['dropout_rate'],
-                    dec_hidden_dim=self.config['dec_hidden_dim'],
-                    att_dim=self.config['att_dim'],
-                    conv_channels=self.config['conv_channels'],
-                    conv_kernel_size=self.config['conv_kernel_size'],
-                    att_odim=self.config['att_odim'],
-                    embedding_dim=self.config['embedding_dim'],
-                    output_dim=len(self.vocab),
-                    pad=self.vocab['<PAD>'],
-                    eos=self.vocab['<EOS>'],
-                    shared=self.config['judge_share_param']
-                    ))
-        print(self.judge)
+        #self.judge = cc(
+        #        Judge(encoder=self.model.encoder, 
+        #            attention=self.model.attention,
+        #            decoder=self.model.decoder, 
+        #            input_dim=self.config['input_dim'],
+        #            enc_hidden_dim=self.config['enc_hidden_dim'],
+        #            enc_n_layers=self.config['enc_n_layers'],
+        #            subsample=self.config['subsample'],
+        #            dropout_rate=self.config['dropout_rate'],
+        #            dec_hidden_dim=self.config['dec_hidden_dim'],
+        #            att_dim=self.config['att_dim'],
+        #            conv_channels=self.config['conv_channels'],
+        #            conv_kernel_size=self.config['conv_kernel_size'],
+        #            att_odim=self.config['att_odim'],
+        #            embedding_dim=self.config['embedding_dim'],
+        #            output_dim=len(self.vocab),
+        #            pad=self.vocab['<PAD>'],
+        #            eos=self.vocab['<EOS>'],
+        #            shared=self.config['judge_share_param']
+        #            ))
+        #print(self.judge)
         # exponential moving average
-        self.ema = EMA(momentum=self.config['ema_momentum'])
-        if self.config['judge_share_param']:
-            self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
-        else:
-            self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+        #self.ema = EMA(momentum=self.config['ema_momentum'])
+        #if self.config['judge_share_param']:
+        #    self.dis_opt = torch.optim.Adam(self.judge.scorer.parameters(), lr=self.config['d_learning_rate'], 
+        #        weight_decay=self.config['weight_decay'])
+        #else:
+        #    self.dis_opt = torch.optim.Adam(self.judge.parameters(), lr=self.config['d_learning_rate'], 
+        #        weight_decay=self.config['weight_decay'])
         return
 
     def ind2sent(self, all_prediction, all_ys):
