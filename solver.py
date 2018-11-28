@@ -149,7 +149,7 @@ class Solver(object):
             ))
         print(self.model)
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
-                weight_decay=self.config['weight_decay'])
+                weight_decay=self.config['weight_decay'], amsgrad=True)
         print(self.gen_opt)
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])

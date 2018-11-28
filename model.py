@@ -287,7 +287,8 @@ class Decoder(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
-        output = F.dropout(output, self.dropout_rate)
+        output = self.dropout_layer(output)
+        #output = F.dropout(output, self.dropout_rate)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
