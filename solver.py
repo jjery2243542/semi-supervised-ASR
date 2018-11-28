@@ -303,9 +303,15 @@ class Solver(object):
         judge_epochs = self.config['judge_epochs']
         total_steps = len(self.train_unlab_y_loader)
         best_val_loss = 100
+	# lr scheduler
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.dis_opt, 
+                milestones=[self.config['dis_change_learning_rate_epoch']],
+                gamma=self.config['lr_gamma'])
         print('--------Judge pretraining--------')
         for epoch in range(judge_epochs):
             total_loss = 0.
+            # schedule
+            scheduler.step()
             for train_steps, data in enumerate(self.train_unlab_y_loader):
                 unlab_ys = [cc(y) for y in data]
                 meta = self.judge_train_one_iteration(unlab_ys)

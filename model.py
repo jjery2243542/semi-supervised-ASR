@@ -91,7 +91,7 @@ class pBLSTM(torch.nn.Module):
                 ys_pad = ys_pad.contiguous().view(ys_pad.size(0), ys_pad.size(1) // 2, ys_pad.size(2) * 2)
                 ilens = [(length + 1) // sub for length in ilens]
             projected = project_layer(ys_pad)
-            xpad = F.relu(projected)
+            xpad = F.tanh(projected)
             xpad = self.dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
