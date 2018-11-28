@@ -77,22 +77,22 @@ class pBLSTM(torch.nn.Module):
         for i, (layer, project_layer) in enumerate(zip(self.layers, self.project_layers)):
             # pack sequence 
             xs_pack = pack_padded_sequence(xpad, ilens, batch_first=True)
-            xs, (_, _) = layer(xs_pack)
-            xs_pad, ilens = pad_packed_sequence(xs, batch_first=True)
-            xs_pad = self.dropout_layer(xs_pad)
+            ys, (_, _) = layer(xs_pack)
+            ys_pad, ilens = pad_packed_sequence(ys, batch_first=True)
+            ys_pad = self.dropout_layer(ys_pad)
             ilens = ilens.numpy()
             # subsampling
             sub = self.subsample[i]
             if sub > 1:
                 # pad one frame
-                if xs_pad.size(1) % 2 == 1:
-                    xs_pad = F.pad(xs_pad.transpose(1, 2), (0, 1), mode='replicate').transpose(1, 2)
+                if ys_pad.size(1) % 2 == 1:
+                    ys_pad = F.pad(ys_pad.transpose(1, 2), (0, 1), mode='replicate').transpose(1, 2)
                 # concat two frames
-                xs_pad = xs_pad.contiguous().view(xs_pad.size(0), xs_pad.size(1) // 2, xs_pad.size(2) * 2)
+                ys_pad = ys_pad.contiguous().view(ys_pad.size(0), ys_pad.size(1) // 2, ys_pad.size(2) * 2)
                 ilens = [(length + 1) // sub for length in ilens]
-            projected = project_layer(xs_pad)
-            xs_pad = F.relu(projected)
-            xs_pad = self.dropout_layer(xs_pad)
+            projected = project_layer(ys_pad)
+            xpad = F.relu(projected)
+            xpad = self.dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
         return xpad, ilens
