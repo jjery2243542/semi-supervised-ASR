@@ -58,7 +58,7 @@ class VGG2L(torch.nn.Module):
 class pBLSTM(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, n_layers, subsample, dropout_rate):
         super(pBLSTM, self).__init__()
-        layers, project_layers = [], []
+        layers, project_layers, norm_layers = [], [], []
         for i in range(n_layers):
             #idim = input_dim if i == 0 else hidden_dim
             idim = input_dim if i == 0 else hidden_dim
@@ -66,15 +66,17 @@ class pBLSTM(torch.nn.Module):
 
             layers.append(torch.nn.LSTM(idim, hidden_dim, num_layers=1,
                 bidirectional=True, batch_first=True))
-
             project_layers.append(torch.nn.Linear(project_dim, hidden_dim))
+            norm_layers.append(torch.nn.LayerNorm(hidden_dim))
         self.layers = torch.nn.ModuleList(layers)
         self.project_layers = torch.nn.ModuleList(project_layers)
+        self.norm_layers = torch.nn.ModuleList(norm_layers)
         self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.subsample = subsample
 
     def forward(self, xpad, ilens):
-        for i, (layer, project_layer) in enumerate(zip(self.layers, self.project_layers)):
+        for i, (layer, project_layer, norm_layer) in \
+                enumerate(zip(self.layers, self.project_layers, self.norm_layers)):
             # pack sequence 
             xs_pack = pack_padded_sequence(xpad, ilens, batch_first=True)
             ys, (_, _) = layer(xs_pack)
@@ -92,6 +94,7 @@ class pBLSTM(torch.nn.Module):
                 ilens = [(length + 1) // sub for length in ilens]
             projected = project_layer(ys_pad)
             xpad = F.relu(projected)
+            xpad = norm_layer(xpad)
             xpad = self.dropout_layer(xpad)
         # type to list of int
         ilens = np.array(ilens, dtype=np.int64).tolist()
@@ -259,7 +262,8 @@ class Decoder(torch.nn.Module):
         self.bos, self.eos, self.pad = bos, eos, pad
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
-        self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
+        self.project_layer = torch.nn.Linear(hidden_dim + att_odim, hidden_dim)
+        self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
         self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.attention = attention
 
@@ -287,8 +291,8 @@ class Decoder(torch.nn.Module):
         # run attention module
         c, w = self.attention(enc_pad, enc_len, dec_z, w)
         output = torch.cat([dec_z, c], dim=-1)
+        output = self.project_layer(output)
         output = self.dropout_layer(output)
-        #output = F.dropout(output, self.dropout_rate)
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
