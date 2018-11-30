@@ -77,6 +77,8 @@ class pBLSTM(torch.nn.Module):
     def forward(self, xpad, ilens):
         for i, (layer, project_layer, norm_layer) in \
                 enumerate(zip(self.layers, self.project_layers, self.norm_layers)):
+        #for i, (layer, project_layer) in \
+        #        enumerate(zip(self.layers, self.project_layers)):
             # pack sequence 
             xs_pack = pack_padded_sequence(xpad, ilens, batch_first=True)
             ys, (_, _) = layer(xs_pack)
@@ -263,6 +265,7 @@ class Decoder(torch.nn.Module):
         self.embedding = torch.nn.Embedding(output_dim, embedding_dim, padding_idx=pad)
         self.LSTMCell = torch.nn.LSTMCell(embedding_dim + att_odim, hidden_dim)
         self.project_layer = torch.nn.Linear(hidden_dim + att_odim, hidden_dim)
+        #self.output_layer = torch.nn.Linear(hidden_dim + att_odim, output_dim)
         self.output_layer = torch.nn.Linear(hidden_dim, output_dim)
         self.dropout_layer = torch.nn.Dropout(p=dropout_rate)
         self.attention = attention
