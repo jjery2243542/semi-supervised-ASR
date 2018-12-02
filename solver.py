@@ -150,9 +150,9 @@ class Solver(object):
         print(self.model)
         self.gen_opt = torch.optim.Adam(self.model.parameters(), lr=self.config['learning_rate'], 
                 weight_decay=self.config['weight_decay'], amsgrad=True)
-        print(self.gen_opt)
         if load_model:
             self.load_model(self.config['load_model_path'], self.config['load_optimizer'])
+        print(self.gen_opt)
 
         self.judge = cc(LM(
                 output_dim=len(self.vocab),
@@ -393,24 +393,24 @@ class Solver(object):
 
     def sup_pretrain(self):
 
+        self.model.train()
         best_cer = 200
         best_model = None
-
         # tf_rate
         init_tf_rate = self.config['init_tf_rate']
         tf_decay_epochs = self.config['tf_decay_epochs']
         tf_rate_lowerbound = self.config['tf_rate_lowerbound']
 
 	# lr scheduler
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
-                milestones=[self.config['change_learning_rate_epoch']],
-                gamma=self.config['lr_gamma'])
+        #scheduler = torch.optim.lr_scheduler.MultiStepLR(self.gen_opt, 
+        #        milestones=[self.config['change_learning_rate_epoch']],
+        #        gamma=self.config['lr_gamma'])
 
         print('------supervised pretraining-------')
 
         for epoch in range(self.config['epochs']):
             # schedule
-            scheduler.step()
+            #scheduler.step()
             # calculate tf rate
             if epoch <= tf_decay_epochs:
                 tf_rate = init_tf_rate - (init_tf_rate - tf_rate_lowerbound) * (epoch / tf_decay_epochs)
@@ -544,8 +544,9 @@ class Solver(object):
         print('--------SSL training--------')
         # adjust learning rate
         adjust_learning_rate(self.gen_opt, self.config['g_learning_rate'])
+        print(self.gen_opt)
 
-        best_cer = 1000
+        best_cer = 2
         best_model = None
 
         total_steps = self.config['ssl_iterations']
