@@ -178,8 +178,9 @@ def pad_list(xs, pad_value=0):
         pad[i, :xs[i].size(0)] = xs[i]
     return pad
 
-def _seq_mask(seq_len, max_len):
-    seq_len = torch.from_numpy(np.array(seq_len))
+def _seq_mask(seq_len, max_len, is_list=True):
+    if is_list:
+        seq_len = torch.from_numpy(np.array(seq_len))
     batch_size = seq_len.size(0)
     seq_range = torch.arange(0, max_len).long()
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)

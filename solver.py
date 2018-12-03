@@ -460,37 +460,23 @@ class Solver(object):
             lab_xs, lab_ilens, lab_ys,
             unlab_xs, unlab_ilens):
 
-        unlab_logits, unlab_log_probs, unlab_prediction, _ = self.model(
+        # generated text as hypothesis
+        unlab_logits, unlab_log_probs, unlab_probs, unlab_predictions = self.model(
                 unlab_xs, 
                 unlab_ilens, 
                 ys=None, sample=False, 
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
-                smooth=self.config['smooth_embedding'])
-        # stop gradients for encoder outputs
-        if not self.config['train_enc']:
-            unlab_enc.detach_()
-        unlab_distr = F.softmax(unlab_logits, dim=-1)
+                smooth=self.config['smooth_embedding'], scaling=self.config['softmax_scaling'])
+
         # speech have been encoded
-        unlab_probs, unlab_latent, _ = self.judge.scorer(
-                unlab_enc, unlab_enc_lens, ys=unlab_distr, is_distr=True)
+        _, lm_probs, _ = self.judge(
+                ys=unlab_predictions, discrete_input=True)
 
-        # calculate loss
-        real_labels = cc(torch.ones(unlab_probs.size(0)))
-        gen_loss = F.binary_cross_entropy(unlab_probs, real_labels)
-        fake_correct = torch.sum((unlab_probs < 0.5).float())
-        
-        if self.config['feature_matching']:
-            # calculate feature matching loss
-            lab_probs, lab_latent, _ = self.judge(lab_xs, lab_ilens, lab_ys, is_distr=False)
-            fm_loss = torch.sum((torch.mean(unlab_latent, dim=0) - torch.mean(lab_latent, dim=0)) ** 2)
-            unsup_loss = gen_loss + self.config['fm_weight'] * fm_loss
-            real_correct = torch.sum((lab_probs >= 0.5).float())
-            acc = (real_correct + fake_correct) / (lab_probs.size(0) + unlab_probs.size(0))
-        else:
-            unsup_loss = gen_loss
-            acc = fake_correct / unlab_probs.size(0)
+        # generate mask by multiply proportion to feature length
+        seq_len = torch.LongTensor(unlab_ilens) * self.proportiion
+        mask = _seq_mask(seq_len, max_len=unlab_logits.size(1), is_list=False)
+        unsup_loss = -lm_probs * unlab_probs * mask
 
-        avg_acc = self.acc_ema(acc)
         # mask and calculate loss
         _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
         sup_loss = -torch.mean(lab_log_probs)
@@ -504,40 +490,31 @@ class Solver(object):
 
         gen_meta = {'unsup_loss': unsup_loss.item(),
                     'sup_loss': sup_loss.item(),
-                    'loss': loss.item(),
-                    'acc':acc.item(),
-                    'avg_acc':avg_acc.item()}
+                    'loss': loss.item()}
 
-        if self.config['feature_matching']:
-            gen_meta['fm_loss'] = fm_loss.item()
         return gen_meta
 
-    def ssl_train_one_iteration(self, iteration): 
-        lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
-        unlab_xs, unlab_ilens, _ = to_gpu(unlab_data)
+    def ssl_train_one_iteration(self, iteration):
+        # drawn from labeled and unlabeled data
+        lab_data, unlab_data = next(self.lab_iter), next(self.unlab_x_iter)
 
-        gen_meta = self.gen_train_one_iteration(
+        # transfer to GPU
+        lab_xs, lab_ilens, lab_ys = to_gpu(lab_data)
+        unlab_xs, unlab_ilens = unlab_data
+        unlab_xs = cc(unlab_xs)
+
+        meta = self.gen_train_one_iteration(
                 lab_xs, lab_ilens, lab_ys,
                 unlab_xs, unlab_ilens)
 
         unsup_loss = gen_meta['unsup_loss']
         sup_loss = gen_meta['sup_loss']
         loss = gen_meta['loss']
-        acc = gen_meta['acc']
-        avg_acc = gen_meta['avg_acc']
-
-        print(f'Gen:[{g_step + 1}/{g_steps}], '
-                f'sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, loss: {loss:.3f}, '
-                f'acc: {acc:.3f}, avg_acc: {avg_acc:.3f}',
-                end='\r')
 
         # add to tensorboard
-        step = iteration * g_steps + g_step + 1
         tag = self.config['tag']
-        for key, val in gen_meta.items():
-            self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, step + 1)
-        print()
-        meta = {**dis_meta, **gen_meta}
+        for key, val in meta.items():
+            self.logger.scalar_summary(f'{tag}/ssl_generator/{key}', val, iteration + 1)
         return meta 
 
     def ssl_train(self):
@@ -556,6 +533,10 @@ class Solver(object):
 
         for step in range(total_steps):
             meta = self.ssl_train_one_iteration(iteration=step)
+            # printed message 
+            sup_loss, unsup_loss, loss = meta['sup_loss'], meta['unsup_loss'], meta['loss']
+            print(f'[{steps + 1}/{total_steps}], sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, '
+                    f'loss: {loss:.3f}', end='\r')
 
             if (step + 1) % self.config['summary_steps'] == 0 or step + 1 == total_steps:
                 avg_valid_loss, cer, prediction_sents, ground_truth_sents = self.validation()

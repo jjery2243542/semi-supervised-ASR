@@ -359,7 +359,7 @@ class Decoder(torch.nn.Module):
             ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze(2)
 
         # label smoothing
-        if self.ls_weight > 0:
+        if self.ls_weight > 0 and self.training:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
         return logits, ys_log_probs, prediction, ws
@@ -522,7 +522,7 @@ class LM(torch.nn.Module):
         ys_log_probs = torch.gather(log_probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
         ys_probs = torch.gather(probs, dim=2, index=pad_ys_out.unsqueeze(2)).squeeze(2)
         # label smoothing
-        if self.ls_weight > 0:
+        if self.ls_weight > 0 and self.training:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
         predictions = torch.argmax(logits, dim=-1)

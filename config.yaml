@@ -3,6 +3,7 @@ tag: sup_drop
 model_dir: /storage/model/e2e_asr/wsj/supervised
 model_name: e2e_si84_50_epochs
 load_model_path: /storage/model/e2e_asr/wsj/supervised/seed_model/e2e_si84
+load_judge_path: /storage/model/e2e_asr/wsj/model_ls_0.05
 load_optimizer: True
 dataset_root_dir: /storage/feature/wsj/processed/deltatrue
 vocab_path: /storage/feature/wsj/processed/deltatrue/vocab_dict.pkl

@@ -26,7 +26,7 @@ if __name__ == '__main__':
         solver = Solver(config, load_model=False)
 
     if args.load_judge:
-        solver.load_judge(config['load_model_path'], config['load_optimizer'])
+        solver.load_judge(config['load_judge_path'], config['load_optimizer'])
 
     if args.sup_pretrain:
         state_dict, cer = solver.sup_pretrain()
