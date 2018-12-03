@@ -60,7 +60,7 @@ class Solver(object):
             self.gen_opt.load_state_dict(torch.load(f'{model_path}.opt'))
         return
 
-    def load_judge(self, model_path, load_optmizer):
+    def load_judge(self, model_path, load_optimizer):
         self.judge.load_state_dict(torch.load(f'{model_path}.judge.ckpt'))
         if load_optimizer:
             self.dis_opt.load_state_dict(torch.load(f'{model_path}.judge.opt'))

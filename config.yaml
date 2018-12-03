@@ -53,7 +53,7 @@ d_learning_rate: 0.0002
 lr_gamma: 0.2
 epochs: 50
 judge_epochs: 40
-ssl_epochs: 100
+ssl_iterations: 100
 unsup_weight: 0.001
 change_learning_rate_epoch: 100
 dis_change_learning_rate_epoch: 30
