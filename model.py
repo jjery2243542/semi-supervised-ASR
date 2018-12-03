@@ -292,7 +292,8 @@ class Decoder(torch.nn.Module):
         logit = self.output_layer(output)
         return logit, dec_z, dec_c, c, w
 
-    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, sample=False, smooth=False, scaling=1.0):
+    def forward(self, enc_pad, enc_len, ys=None, tf_rate=1.0, max_dec_timesteps=500, 
+            sample=False, smooth=False, scaling=1.0, label_smoothing=True):
         batch_size = enc_pad.size(0)
         if ys is not None:
             # prepare input and output sequences
@@ -359,7 +360,7 @@ class Decoder(torch.nn.Module):
             ys_log_probs = torch.gather(log_probs, dim=2, index=prediction.unsqueeze(2)).squeeze(2)
 
         # label smoothing
-        if self.ls_weight > 0 and self.training:
+        if label_smoothing and self.ls_weight > 0 and self.training:
             loss_reg = torch.sum(log_probs * self.vlabeldist, dim=2)
             ys_log_probs = (1 - self.ls_weight) * ys_log_probs + self.ls_weight * loss_reg
         return logits, ys_log_probs, prediction, ws
@@ -435,10 +436,11 @@ class E2E(torch.nn.Module):
                 pad=pad)
 
     def forward(self, data, ilens, ys=None, tf_rate=1.0, max_dec_timesteps=200, 
-            sample=False, smooth=False, scaling=3.0):
+            sample=False, smooth=False, scaling=1.0, label_smoothing=True):
         enc_h, enc_lens = self.encoder(data, ilens)
         logits, log_probs, prediction, ws = self.decoder(enc_h, enc_lens, ys, 
-                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, sample=sample, smooth=smooth, scaling=scaling)
+                tf_rate=tf_rate, max_dec_timesteps=max_dec_timesteps, 
+                sample=sample, smooth=smooth, scaling=scaling, label_smoothing=label_smoothing)
         return logits, log_probs, prediction, ws
 
     def mask_and_cal_loss(self, log_probs, ys, mask=None):
@@ -497,7 +499,7 @@ class LM(torch.nn.Module):
         # for generate output
         else:
             # add <bos> at the beginning, and drop last as input
-            bos_seq = ys.new(ys.size(0), 1).fill_(bos)
+            bos_seq = ys.new_zeros(ys.size(0), 1) + bos
             pad_ys_in = torch.cat([bos_seq, ys[:, :-1]], dim=1)
             pad_ys_out = ys
 

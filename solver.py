@@ -5,6 +5,7 @@ from model import E2E, LM
 from dataloader import get_data_loader
 from dataset import PickleDataset, NegativeDataset
 from utils import *
+from utils import _seq_mask
 import yaml
 import os
 import pickle
@@ -461,21 +462,21 @@ class Solver(object):
             unlab_xs, unlab_ilens):
 
         # generated text as hypothesis
-        unlab_logits, unlab_log_probs, unlab_probs, unlab_predictions = self.model(
+        unlab_logits, unlab_log_probs, unlab_predictions, _ = self.model(
                 unlab_xs, 
                 unlab_ilens, 
-                ys=None, sample=False, 
+                ys=None, sample=False, label_smoothing=False,  
                 max_dec_timesteps=int(unlab_xs.size(1) * self.proportion), 
                 smooth=self.config['smooth_embedding'], scaling=self.config['softmax_scaling'])
 
         # speech have been encoded
         _, lm_probs, _ = self.judge(
-                ys=unlab_predictions, discrete_input=True)
+                ys=unlab_predictions, discrete_input=False)
 
         # generate mask by multiply proportion to feature length
-        seq_len = torch.LongTensor(unlab_ilens) * self.proportiion
+        seq_len = (unlab_logits.new(unlab_ilens) * self.proportion).long()
         mask = _seq_mask(seq_len, max_len=unlab_logits.size(1), is_list=False)
-        unsup_loss = -lm_probs * unlab_probs * mask
+        unsup_loss = -torch.sum(lm_probs * unlab_log_probs * mask) / torch.sum(mask)
 
         # mask and calculate loss
         _, lab_log_probs, _, _ = self.model(lab_xs, lab_ilens, ys=lab_ys, tf_rate=1.0, sample=False)
@@ -507,10 +508,6 @@ class Solver(object):
                 lab_xs, lab_ilens, lab_ys,
                 unlab_xs, unlab_ilens)
 
-        unsup_loss = gen_meta['unsup_loss']
-        sup_loss = gen_meta['sup_loss']
-        loss = gen_meta['loss']
-
         # add to tensorboard
         tag = self.config['tag']
         for key, val in meta.items():
@@ -535,7 +532,7 @@ class Solver(object):
             meta = self.ssl_train_one_iteration(iteration=step)
             # printed message 
             sup_loss, unsup_loss, loss = meta['sup_loss'], meta['unsup_loss'], meta['loss']
-            print(f'[{steps + 1}/{total_steps}], sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, '
+            print(f'[{step + 1}/{total_steps}], sup_loss: {sup_loss:.3f}, unsup_loss: {unsup_loss:.3f}, '
                     f'loss: {loss:.3f}', end='\r')
 
             if (step + 1) % self.config['summary_steps'] == 0 or step + 1 == total_steps:
