@@ -148,8 +148,9 @@ class AttLoc(torch.nn.Module):
         else:
             dec_z = dec_z.view(batch_size, self.decoder_dim)
 
-        # initialize attention weights to uniform
-        att_prev = pad_list([self.enc_h.new(l).fill_(1.0 / l) for l in enc_len], 0)
+        if att_prev is None:
+            # initialize attention weights to uniform
+            att_prev = pad_list([self.enc_h.new(l).fill_(1.0 / l) for l in enc_len], 0)
 
         #att_prev: batch_size x frame
         att_conv = self.loc_conv(att_prev.view(batch_size, 1, 1, self.enc_length))

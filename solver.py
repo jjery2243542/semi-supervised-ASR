@@ -473,9 +473,8 @@ class Solver(object):
         _, lm_probs, _ = self.judge(
                 ys=unlab_predictions, discrete_input=False)
 
-        # generate mask by multiply proportion to feature length
-        seq_len = (unlab_logits.new(unlab_ilens) * self.proportion).long()
-        mask = _seq_mask(seq_len, max_len=unlab_logits.size(1), is_list=False)
+        # generate mask by set <EOS> to 0
+        mask = (unlab_predictions != self.vocab['<EOS>']).float()
         unsup_loss = -torch.sum(lm_probs * unlab_log_probs * mask) / torch.sum(mask)
 
         # mask and calculate loss
